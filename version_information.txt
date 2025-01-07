@@ -1,0 +1,8 @@
+Interpreter:
+    Python - 3.13.1
+
+Libraries:
+    NumPy - 2.2.1
+    Pandas - 2.2.3
+    SciPY - 1.15.0
+    Matplotlib - 3.10.0
