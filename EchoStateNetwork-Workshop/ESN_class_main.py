@@ -50,15 +50,18 @@ class EchoStateNetwork:
         self.W_fb = None
 
         # Additional parameters:
+        self.seed = int(ESN_params['seed'])
+        self.rng = np.random.default_rng(self.seed)
+
         self.dtype = dtype
         if self.dtype not in ["float64", "float32", "float16"]:
-            raise ValueError(f"Selected datatype must adhere to {["float64", "float32", "float16"]}")
+            raise ValueError(f"Selected datatype must adhere to {['float64', 'float32', 'float16']}")
 
+        # Ensuring that the verbosity scale is an integer, and that it falls into the acceptable range.
         self.verbose = int(verbose)
         if self.verbose > 3:
             self.verbose = 3
 
-        self.seed = int(ESN_params['seed'])
 
 
         # Might not keep. Operations should ideally be kept separate from the network's formation.
@@ -66,7 +69,7 @@ class EchoStateNetwork:
         self.prediction_length = ESN_params['prediction_length']
 
 
-    def initialize_reservoir(self, distribution: str = 'normal') -> np.ndarray:
+    def initialize_reservoir(self, distribution: str = 'normal') -> sparse.csr_matrix:
 
         """
         Initializes an N*N sparse adjacency matrix that defines the reservoir of the ESN. The nonzero elements of the
@@ -76,41 +79,31 @@ class EchoStateNetwork:
         :return: csr_matrix: Sparse reservoir matrix with the desired spectral radius.
         """
 
+        # Check that the reservoir distribution requested is a valid input.
         if distribution not in ["uniform", "normal"]:
             raise ValueError(f"Selected distribution must be 'uniform' or 'normal'")
 
-        # Initializing the random number generator using Numpy.
-        rng = np.random.default_rng(self.seed)
+        # Generate sparsity mask. This should be reproducible amongst consistent seeds.
+        mask = self.rng.random((self.N, self.N)) < self.connectivity
 
         if distribution == 'normal':
-            # Sample reservoir weights from a Gaussian distribution.
-            self.W_res = sparse.random(
-                m=self.N,
-                n=self.N,
-                density=self.connectivity,
-                format='csr',
-                data_rvs=lambda n: rng.normal(loc=0, scale=1, size=n)
-            )
+            # Sample reservoir weights from a standard Gaussian distribution.
+            self.W_res = self.rng.normal(loc=0, scale=1, size=mask.sum())
             # Rescale to ensure standard deviation is 1
-            self.W_res.data /= np.std(self.W_res.data)
+            self.W_res /= np.std(self.W_res)
 
-            if self.verbose > 0:
-                print("Base matrix initialized. Beginning spectral radius scaling.")
 
         elif distribution == 'uniform':
-            # Sample reservoir weights from a symmetric normal distribution.
-            self.W_res = sparse.random(
-                m=self.N,
-                n=self.N,
-                density=self.connectivity,
-                format='csr',
-                data_rvs=lambda n: rng.uniform(low=-0.5, high=0.5, size=n)
-            )
+            # Sample reservoir weights from a symmetric uniform distribution.
+            self.W_res = self.rng.uniform(low=-0.5, high=0.5, size=mask.sum())
             # Rescale to ensure range is consistent
-            self.W_res.data /= np.abs(self.W_res.data).max()  # Scale to [-0.5, 0.5]
+            self.W_res /= np.abs(self.W_res).max()  # Scale to [-0.5, 0.5]
 
-            if self.verbose > 0:
-                print("Base matrix initialized. Beginning spectral radius scaling.")
+        row_indices, col_indices = np.where(mask)
+        self.W_res = sparse.csr_matrix((self.W_res, (row_indices, col_indices)), shape=(self.N, self.N))
+
+        if self.verbose > 0:
+            print("Reservoir adjacency matrix initialized. Beginning spectral radius scaling.")
 
         self.scale_spectral_radius()
 
@@ -123,9 +116,8 @@ class EchoStateNetwork:
         if self.verbose > 2:
             print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
 
+        return self. W_res
 
-
-        return self.W_res
 
     def scale_spectral_radius(self) -> None:
 
@@ -136,59 +128,25 @@ class EchoStateNetwork:
         For large reservoirs, (N > 1000), use power iteration for efficiency.
         """
 
-        if self.N < 1001:
-            # Use eigs for smaller matrices
-            largest_eigenvalue = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM', return_eigenvectors=False)[0])
-
-        else:
-            largest_eigenvalue = self.estimate_spectral_radius(self.W_res)
+        largest_eigenvalue = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',
+                                                       return_eigenvectors=False,
+                                                       tol=1e-10)[0])
 
         # Scale the sparse reservoir matrix.
         self.W_res *= self.sr / largest_eigenvalue
 
+
+        # Forcefully broadening the output distribution.
+        # Normalize the non-zero values to [-1, +1].
+        # self.W_res.data /= np.abs(self.W_res.data).max()
+        # self.W_res.data *= self.sr
+        # self.W_res.data *= 0.5
+
         if self.verbose > 0:
-            print(f"Reservoir spectral radius scaled to: {self.sr}")
-
-
-    def estimate_spectral_radius(self, max_iter=100, tol=1e-6):
-
-        """
-        Uses the power iteration method to estimate the spectral radius of the reservoir matrix, W_res. This method
-        is only applied when the reservoir is very large.
-
-        :param max_iter: The maximum number of iterations this method attempts to converge.
-        :param tol: The difference between subsequent iterations that defines acceptable convergence.
-        :return: The estimated spectral radius of the randomly generated reservoir matrix.
-        """
-
-        rng = np.random.default_rng(self.seed)
-        v = rng.random(self.N)  # Random vector of size N used to approximate the reservoir's largest eigenvector.
-
-        # Normalize the initial vector. We use Numpy because this vector is dense.
-        v /= np.linalg.norm(v)
-
-        # Establish the current estimate for the maximum eigenvalue.
-        eig_prev = 0
-
-        for _ in range(max_iter):
-            # Multiply v by W_res. Then normalise.
-            v = self.W_res @ v
-            v /= np.linalg.norm(v)
-
-            # Calculate the corresponding eigenvalue:
-            eig = (v.T @ self.W_res @ v) / (v.T @ v)
-
-            # Check for convergence
-            if np.abs(eig - eig_prev) < tol:
-                return eig
-
-            # Store this current eigenvalue for subsequent steps.
-            eig_prev = eig
-
-
-
-
-
+            new_sr = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',
+                                               return_eigenvectors=False,
+                                               tol=1e-10)[0])
+            print(f"Reservoir spectral radius scaled to: {new_sr}")
 
 
     def plot_reservoir_histogram(self) -> None:
@@ -200,10 +158,14 @@ class EchoStateNetwork:
         # Collect only the nonzero values of the reservoir matrix.
         non_zero_values = self.W_res.data
 
+        # Checking that there is actually data to plot.
+        if len(non_zero_values) == 0:
+            print("There are no non-zero values in the reservoir matrix to plot.")
+            return
+
         # Plot histogram.
         plt.hist(non_zero_values, bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
         plt.title("Distribution of reservoir's nonzero elements")
         plt.xlabel("Value")
         plt.ylabel("Density")
-        plt.grid(True)
         plt.show()

@@ -1,5 +1,5 @@
 Interpreter:
-    Python - 3.13.1
+    Python - 3.10.12
 
 Libraries:
     NumPy - 2.2.1
