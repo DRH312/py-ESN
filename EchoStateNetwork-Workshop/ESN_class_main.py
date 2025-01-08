@@ -43,6 +43,9 @@ class EchoStateNetwork:
         self.iss = ESN_params['input_scaling']
         self.sr = ESN_params['spectral_radius']
 
+        # Parameters that affect the structure of the network.
+        self.enable_feedback = ESN_params['enable_forcing']
+
         # Model weights:
         self.W_in = None
         self.W_res = None
@@ -62,9 +65,8 @@ class EchoStateNetwork:
         if self.verbose > 3:
             self.verbose = 3
 
-
-
         # Might not keep. Operations should ideally be kept separate from the network's formation.
+        # Ideally, the properties of a generally well-trained network should be independent of the data it operates on.
         self.train_length = ESN_params['train_length']
         self.prediction_length = ESN_params['prediction_length']
 
@@ -85,19 +87,38 @@ class EchoStateNetwork:
 
         # Generate sparsity mask. This should be reproducible amongst consistent seeds.
         mask = self.rng.random((self.N, self.N)) < self.connectivity
+        num_nonzeros = mask.sum()
+        print(mask)
+
 
         if distribution == 'normal':
             # Sample reservoir weights from a standard Gaussian distribution.
-            self.W_res = self.rng.normal(loc=0, scale=1, size=mask.sum())
+
+            # Initializing the reservoir adjacency matrix.
+            self.W_res = self.rng.normal(loc=0, scale=1, size=num_nonzeros)
             # Rescale to ensure standard deviation is 1
             self.W_res /= np.std(self.W_res)
+
+            # Initialising the input connection weights.
+            # These are sampled from the same distribution as the reservoir, but remain dense.
+            self.W_in = self.rng.normal(loc=0, scale=1, size=num_nonzeros)
+            # Setting the range to [-1, +1]
+            self.W_in /= np.abs(self.W_in).max()
 
 
         elif distribution == 'uniform':
             # Sample reservoir weights from a symmetric uniform distribution.
-            self.W_res = self.rng.uniform(low=-0.5, high=0.5, size=mask.sum())
+
+            # Initializing the reservoir adjacency matrix.
+            self.W_res = self.rng.uniform(low=-0.5, high=0.5, size=num_nonzeros)
             # Rescale to ensure range is consistent
             self.W_res /= np.abs(self.W_res).max()  # Scale to [-0.5, 0.5]
+
+            # Initializing the input connection weights.
+            # These are sampled from the same distribution as the reservoir, but remain dense.
+            self.W_in = self.rng.uniform(low=-0.5, high=0.5, size=num_nonzeros)
+            self.W_in /= np.abs(self.W_in).max()  # Scale to [-0.5, 0.5]
+
 
         row_indices, col_indices = np.where(mask)
         self.W_res = sparse.csr_matrix((self.W_res, (row_indices, col_indices)), shape=(self.N, self.N))
@@ -105,6 +126,7 @@ class EchoStateNetwork:
         if self.verbose > 0:
             print("Reservoir adjacency matrix initialized. Beginning spectral radius scaling.")
 
+        # Now that matrices are generated, scale the spectral radius of the reservoir.
         self.scale_spectral_radius()
 
         if self.verbose > 0:
@@ -131,9 +153,11 @@ class EchoStateNetwork:
         largest_eigenvalue = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',
                                                        return_eigenvectors=False,
                                                        tol=1e-10)[0])
+        print(f"The largest eigenvalue of this matrix was: {largest_eigenvalue}")
 
         # Scale the sparse reservoir matrix.
-        self.W_res *= self.sr / largest_eigenvalue
+        scale_factor = self.sr / largest_eigenvalue
+        self.W_res *= scale_factor
 
 
         # Forcefully broadening the output distribution.
@@ -156,16 +180,33 @@ class EchoStateNetwork:
         """
 
         # Collect only the nonzero values of the reservoir matrix.
-        non_zero_values = self.W_res.data
+        reservoir_values = self.W_res.data
+        input_values = self.W_in
 
         # Checking that there is actually data to plot.
-        if len(non_zero_values) == 0:
-            print("There are no non-zero values in the reservoir matrix to plot.")
-            return
+        if len(reservoir_values) == 0:
+            raise ValueError("There are no non-zero values in the reservoir matrix to plot.")
 
-        # Plot histogram.
-        plt.hist(non_zero_values, bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
-        plt.title("Distribution of reservoir's nonzero elements")
-        plt.xlabel("Value")
-        plt.ylabel("Density")
-        plt.show()
+        elif len(input_values) == 0:
+            raise ValueError("There are no non-zero values in the input connection matrix to plot.")
+
+        else:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+            # Plot histogram for the input weights
+            axes[0].hist(input_values, bins=50, density=True, color='orange', edgecolor='black', alpha=0.75)
+            axes[0].set_title("Input Weights Distribution")
+            axes[0].set_xlabel("Value")
+            axes[0].set_ylabel("Density")
+            axes[0].grid(True)
+
+            # Plot histogram for the reservoir weights
+            axes[1].hist(reservoir_values, bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
+            axes[1].set_title("Reservoir Weights Distribution")
+            axes[1].set_xlabel("Value")
+            axes[1].set_ylabel("Density")
+            axes[1].grid(True)
+
+            # Adjust layout and display the plot
+            plt.tight_layout()
+            plt.show()
