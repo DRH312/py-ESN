@@ -9,7 +9,9 @@ import pandas as pd
 # Visualization
 import matplotlib.pyplot as plt
 
-
+# Brevity
+from datetime import datetime
+timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M")
 
 
 """
@@ -103,6 +105,7 @@ class EchoStateNetwork:
             # Sample reservoir weights from a standard Gaussian distribution.
 
             # Initializing the reservoir adjacency matrix.
+            # Generates exactly as many nonzero elements as are defined by the mask.
             self.W_res = self.rng.normal(loc=0, scale=1, size=num_nonzeros)
             # Rescale to ensure standard deviation is 1
             self.W_res /= np.std(self.W_res)
@@ -163,15 +166,26 @@ class EchoStateNetwork:
         self.scale_spectral_radius()
 
         if self.verbose > 0:
-            print("Reservoir weights initialized.")
+            print("Reservoir weights spectral radius scaling completed.")
 
         if self.verbose > 1:
             self.plot_reservoir_histogram()
 
+            # Print a table of matrix shapes
+            print("\n=== Matrix Shapes ===")
+            print(f"{'Matrix':<15}{'Shape':<20}")
+            print(f"{'-' * 35}")
+            print(f"{'W_res':<15}{str(self.W_res.shape):<20}")
+            print(f"{'W_in':<15}{str(self.W_in.shape):<20}")
+            if self.W_fb is not None:
+                print(f"{'W_fb':<15}{str(self.W_fb.shape):<20}")
+            else:
+                print(f"{'W_fb':<15}{'None':<20}")
+
         if self.verbose > 2:
             print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
 
-            current_dir = os.path.dirname(__file__)
+            current_dir = os.getcwd()
             parent_dir = os.path.dirname(current_dir)
 
             # Define the output directory at the parent level
@@ -180,14 +194,14 @@ class EchoStateNetwork:
 
             # Save reservoir weights.
             W_res_dense = self.W_res.toarray()  # Converting to dense for uploading to CSV.
-            pd.DataFrame(W_res_dense).to_csv(os.path.join(output_dir, "W_res.csv"), index=False, header=False)
+            pd.DataFrame(W_res_dense).to_csv(os.path.join(output_dir, f"W_res-{timestamp}.csv"), index=False, header=False)
 
             # Save W_in
-            pd.DataFrame(self.W_in).to_csv(os.path.join(output_dir, "W_in.csv"), index=False, header=False)
+            pd.DataFrame(self.W_in).to_csv(os.path.join(output_dir, f"W_in-{timestamp}.csv"), index=False, header=False)
 
             # Save W_fb if feedback is enabled
             if self.W_fb is not None:
-                pd.DataFrame(self.W_fb).to_csv(os.path.join(output_dir, "W_fb.csv"), index=False, header=False)
+                pd.DataFrame(self.W_fb).to_csv(os.path.join(output_dir, f"W_fb-{timestamp}.csv"), index=False, header=False)
 
             print(f"Network matrices uploaded to {output_dir}")
 
@@ -196,9 +210,6 @@ class EchoStateNetwork:
 
         """
         Scales the spectral radius of the reservoir matrix to match user-specification.
-
-        For small reservoirs, (N <= 1000), use 'scipy.sparse.linalg.eigs'.
-        For large reservoirs, (N > 1000), use power iteration for efficiency.
         """
 
         largest_eigenvalue = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',
@@ -229,16 +240,11 @@ class EchoStateNetwork:
         Plots a histogram of the reservoir matrix elements to assure the user of correct implementation.
         """
 
-        # Collect only the nonzero values of the reservoir matrix.
-        reservoir_values = self.W_res.data
-        input_values = self.W_in.flatten()
-        feedback_values = self.W_fb.flatten()
-
         # Checking that there is actually data to plot.
-        if len(reservoir_values) == 0:
+        if len(self.W_res.data) == 0:
             raise ValueError("There are no non-zero values in the reservoir matrix to plot.")
 
-        elif len(input_values) == 0:
+        elif len(self.W_in.flatten()) == 0:
             raise ValueError("There are no non-zero values in the input connection matrix to plot.")
 
         else:
@@ -246,14 +252,14 @@ class EchoStateNetwork:
             fig, axes = plt.subplots(1, num_plots, figsize=(15, 5))
 
             # Plot histogram for the input weights
-            axes[0].hist(input_values, bins=50, density=True, color='orange', edgecolor='black', alpha=0.75)
+            axes[0].hist(self.W_res.data, bins=50, density=True, color='orange', edgecolor='black', alpha=0.75)
             axes[0].set_title("Input Weights Distribution")
             axes[0].set_xlabel("Value")
             axes[0].set_ylabel("Density")
             axes[0].grid(True)
 
             # Plot histogram for the reservoir weights
-            axes[1].hist(reservoir_values, bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
+            axes[1].hist(self.W_in.flatten(), bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
             axes[1].set_title("Reservoir Weights Distribution")
             axes[1].set_xlabel("Value")
             axes[1].set_ylabel("Density")
@@ -261,7 +267,11 @@ class EchoStateNetwork:
 
             # Plot histogram for feedback weights if feedback is enabled.
             if self.enable_feedback:
-                axes[2].hist(feedback_values, bins=50, density=True, color='green', edgecolor='black', alpha=0.75)
+                # Check that there is feedback data to plot.
+                if len(self.W_fb.flatten()) == 0:
+                    raise ValueError("There are no non-zero values in the feedback connection matrix to plot.")
+
+                axes[2].hist(self.W_fb.flatten(), bins=50, density=True, color='green', edgecolor='black', alpha=0.75)
                 axes[2].set_title("Feedback Weights Distribution")
                 axes[2].set_xlabel("Value")
                 axes[2].set_ylabel("Density")
