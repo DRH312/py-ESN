@@ -45,7 +45,8 @@ class EchoStateNetwork:
         self.penalty = ESN_params['ridge']
         self.leak = ESN_params['leak']
         self.connectivity = ESN_params['connectivity']
-        self.iss = ESN_params['input_scaling']
+        self.input_scaling = ESN_params['input_scaling']
+        self.teacher_scaling = ESN_params['teacher_scaling']
         self.sr = ESN_params['spectral_radius']
 
         # Parameters that affect the structure of the network.
@@ -106,13 +107,13 @@ class EchoStateNetwork:
 
             # Initializing the reservoir adjacency matrix.
             # Generates exactly as many nonzero elements as are defined by the mask.
-            self.W_res = self.rng.normal(loc=0, scale=1, size=num_nonzeros)
+            self.W_res = self.rng.normal(loc=0, scale=1, size=num_nonzeros).astype(self.dtype)
             # Rescale to ensure standard deviation is 1
             self.W_res /= np.std(self.W_res)
 
             # Initialising the input connection weights.
             # These are sampled from the same distribution as the reservoir, but remain dense.
-            self.W_in = self.rng.normal(loc=0, scale=1, size=(self.N, self.K + self.bias))
+            self.W_in = self.rng.normal(loc=0, scale=1, size=(self.N, self.K + self.bias)).astype(self.dtype)
             # Setting the range to [-1, +1]
             self.W_in /= np.abs(self.W_in).max()
 
@@ -121,7 +122,7 @@ class EchoStateNetwork:
 
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
-                self.W_fb = self.rng.normal(loc=0, scale=1, size=(self.N, self.L + self.bias))
+                self.W_fb = self.rng.normal(loc=0, scale=1, size=(self.N, self.L + self.bias)).astype(self.dtype)
                 self.W_fb /= np.abs(self.W_fb).max()
 
                 if self.bias:
@@ -135,18 +136,18 @@ class EchoStateNetwork:
             # Sample reservoir weights from a symmetric uniform distribution.
 
             # Initializing the reservoir adjacency matrix.
-            self.W_res = self.rng.uniform(low=-0.5, high=0.5, size=num_nonzeros)
+            self.W_res = self.rng.uniform(low=-0.5, high=0.5, size=num_nonzeros).astype(self.dtype)
             # Rescale to ensure range is consistent
             self.W_res /= np.abs(self.W_res).max()  # Scale to [-0.5, 0.5]
 
             # Initializing the input connection weights.
             # These are sampled from the same distribution as the reservoir, but remain dense.
-            self.W_in = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.K + self.bias))
+            self.W_in = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.K + self.bias)).astype(self.dtype)
             self.W_in /= np.abs(self.W_in).max()  # Scale to [-0.5, 0.5]
 
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
-                self.W_fb = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.L + self.bias))
+                self.W_fb = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.L + self.bias)).astype(self.dtype)
                 self.W_fb /= np.abs(self.W_fb).max()
 
                 if self.bias:
@@ -157,19 +158,20 @@ class EchoStateNetwork:
 
 
         row_indices, col_indices = np.where(mask)
-        self.W_res = sparse.csr_matrix((self.W_res, (row_indices, col_indices)), shape=(self.N, self.N))
+        self.W_res = sparse.csr_matrix((self.W_res, (row_indices, col_indices)),
+                                       shape=(self.N, self.N), dtype=self.dtype)
 
         if self.verbose > 0:
             print("Reservoir adjacency matrix initialized. Beginning spectral radius scaling.")
 
         # Now that matrices are generated, scale the spectral radius of the reservoir.
-        self.scale_spectral_radius()
+        self._scale_spectral_radius()
 
         if self.verbose > 0:
             print("Reservoir weights spectral radius scaling completed.")
 
         if self.verbose > 1:
-            self.plot_reservoir_histogram()
+            self._plot_reservoir_histogram()
 
             # Print a table of matrix shapes
             print("\n=== Matrix Shapes ===")
@@ -194,19 +196,22 @@ class EchoStateNetwork:
 
             # Save reservoir weights.
             W_res_dense = self.W_res.toarray()  # Converting to dense for uploading to CSV.
-            pd.DataFrame(W_res_dense).to_csv(os.path.join(output_dir, f"W_res-{timestamp}.csv"), index=False, header=False)
+            pd.DataFrame(W_res_dense).to_csv(os.path.join(output_dir, f"W_res-{timestamp}.csv"), index=False,
+                                             header=False)
 
             # Save W_in
-            pd.DataFrame(self.W_in).to_csv(os.path.join(output_dir, f"W_in-{timestamp}.csv"), index=False, header=False)
+            pd.DataFrame(self.W_in).to_csv(os.path.join(output_dir, f"W_in-{timestamp}.csv"), index=False,
+                                           header=False)
 
             # Save W_fb if feedback is enabled
             if self.W_fb is not None:
-                pd.DataFrame(self.W_fb).to_csv(os.path.join(output_dir, f"W_fb-{timestamp}.csv"), index=False, header=False)
+                pd.DataFrame(self.W_fb).to_csv(os.path.join(output_dir, f"W_fb-{timestamp}.csv"), index=False,
+                                               header=False)
 
             print(f"Network matrices uploaded to {output_dir}")
 
 
-    def scale_spectral_radius(self) -> None:
+    def _scale_spectral_radius(self) -> None:
 
         """
         Scales the spectral radius of the reservoir matrix to match user-specification.
@@ -234,7 +239,7 @@ class EchoStateNetwork:
             print(f"Reservoir spectral radius scaled to: {new_sr}")
 
 
-    def plot_reservoir_histogram(self) -> None:
+    def _plot_reservoir_histogram(self) -> None:
 
         """
         Plots a histogram of the reservoir matrix elements to assure the user of correct implementation.
@@ -280,3 +285,108 @@ class EchoStateNetwork:
             # Adjust layout and display the plot
             plt.tight_layout()
             plt.show()
+
+
+    def _scale_inputs(self, inputs) -> np.ndarray:
+        """
+        Applies element-wise scaling to the entire sequence of inputs.
+
+        :param inputs: An input sequence in the form of an array with shape (K, timesteps).
+        :return: A scaled input sequence of the same form and shape.
+        """
+
+        if inputs.shape[0] != self.K:
+            raise ValueError(
+                f"Input features ({inputs.shape[0]}) does not match the number of input nodes, ({self.K}).")
+
+        return inputs * self.input_scaling[:, None]
+
+
+    def _scale_feedback(self, targets) -> np.ndarray:
+        """
+        Applies feedback scaling factors
+
+        :param targets: A target sequence in the form of an array with shape (L, timesteps).
+
+        :return: A scaled target sequence of the same form and shape.
+        """
+
+        if targets.shape[0] != self.L:
+            raise ValueError(
+                f"Input features ({targets.shape[0]}) does not match the number of input nodes, ({self.L}).")
+
+        return targets * self.teacher_scaling[:, None]
+
+
+    def _update_no_feedback(self, prev_state, input_pattern) -> np.ndarray:
+        """
+        Performs a singular reservoir update. No feedback is utilised here.
+
+        :param prev_state: The preceding reservoir state, with shape (N, 1).
+        :param input_pattern: The current input vector, with shape (K, 1).
+
+        :return: The current reservoir state, with shape (N, 1) as well.
+        """
+
+        nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state
+        return (1 - self.leak) * prev_state + self.leak * np.tanh(nonlinear_contribution)
+
+
+    def _update_with_feedback(self, prev_state, input_pattern, target) -> np.ndarray:
+
+        """
+        Performs a singular reservoir update, including contributions from feedback.
+
+        :param prev_state: The preceding reservoir state, with shape (N, 1)
+        :param input_pattern: The current input vector, with shape (K, 1).
+        :param target: The current target vector, with shape (L, 1).
+
+        :return: The current reservoir state, with shape (N, 1) as well.
+        """
+
+        nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state + self.W_fb @ target
+        return (1 - self.leak) * prev_state + self.leak * np.tanh(nonlinear_contribution)
+
+
+    def acquire_reservoir_states(self, inputs, teachers=None):
+
+        """
+        Perform dimensionality expansion on the data used to train the network. Conventionally, this will usually be
+        the past of a signal, for which forecasting is used to predict the signal's evolution. #
+
+        :param inputs: Input sequence with shape (K, timesteps).
+        :param teachers: Target sequence with shape (L, timesteps). Only required if feedback is enabled.
+
+        :return: Reservoir states with shape (N, timesteps).
+        """
+
+        # Pre-scale the inputs.
+        scaled_inputs = self._scale_inputs(inputs) if self.input_scaling is not None else inputs
+
+        # Pre-scale the targets for feedback, but only if feedback is enabled.
+        scaled_teachers = None
+        if self.enable_feedback:
+            if teachers is None:
+                raise ValueError("Feedback is enabled but no output sequence has been provided for state acquisition.")
+            scaled_teachers = self.teacher_scaling(teachers) if self.teacher_scaling is not None else teachers
+            # Prepend a column of zeros to allow for feedback at t=0
+            scaled_teachers = np.hstack([np.zeros((self.L, 1), dtype=self.dtype), scaled_teachers])
+
+        # Initialize the base reservoir state, and determine the "length" of the signal.
+        timesteps = scaled_inputs.shape[1]
+        states = np.zeros(shape=(self.N, timesteps), dtype=self.dtype)
+
+        # Iterate over the timesteps and perform dimensionality expansion to generate reservoir states.
+        if self.enable_feedback:
+            for t in range(timesteps):
+                input_pattern = scaled_inputs[:, t:t+1]  # Maintains the 2D shape of the input.
+                teacher_pattern = scaled_teachers[:, t:t + 1]  # Always use y[n-1] for feedback
+                states[:, t:t + 1] = self._update_with_feedback(states[:, t - 1:t], input_pattern, teacher_pattern)
+
+        else:
+            for t in range(timesteps):
+                input_pattern = scaled_inputs[:, t:t+1]  # Maintains the 2D shape of the input.
+                states[:, t:t+1] = self._update_no_feedback(states[:, t-1:t], input_pattern)
+
+        return states
+
