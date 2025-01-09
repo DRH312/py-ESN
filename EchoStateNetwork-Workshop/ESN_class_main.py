@@ -381,12 +381,13 @@ class EchoStateNetwork:
             for t in range(timesteps):
                 input_pattern = scaled_inputs[:, t:t+1]  # Maintains the 2D shape of the input.
                 teacher_pattern = scaled_teachers[:, t:t + 1]  # Always use y[n-1] for feedback
-                states[:, t:t + 1] = self._update_with_feedback(states[:, t - 1:t], input_pattern, teacher_pattern)
+                states[:, t:t + 1] = self._update_with_feedback(states[:, t - 1:t],
+                                                                input_pattern, teacher_pattern).astype(self.dtype)
 
         else:
             for t in range(timesteps):
                 input_pattern = scaled_inputs[:, t:t+1]  # Maintains the 2D shape of the input.
-                states[:, t:t+1] = self._update_no_feedback(states[:, t-1:t], input_pattern)
+                states[:, t:t+1] = self._update_no_feedback(states[:, t-1:t], input_pattern).astype(self.dtype)
 
-        return states
+        return states.astype(self.dtype)
 
