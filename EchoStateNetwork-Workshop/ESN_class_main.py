@@ -42,15 +42,15 @@ class EchoStateNetwork:
         self.L = ESN_params['output_dim']  # The number of features in the output vector.
 
         # Model hyperparameters:
-        self.penalty = ESN_params['ridge']
         self.leak = ESN_params['leak']
         self.connectivity = ESN_params['connectivity']
         self.input_scaling = ESN_params['input_scaling']
-        self.teacher_scaling = ESN_params['teacher_scaling']
         self.sr = ESN_params['spectral_radius']
 
         # Parameters that affect the structure of the network.
-        self.enable_feedback = ESN_params['enable_forcing']
+        self.enable_feedback = ESN_params['enable_feedback']
+        if self.enable_feedback:
+            self.teacher_scaling = ESN_params['teacher_scaling']
 
         # Determines random number generation.
         self.seed = int(ESN_params['seed'])
@@ -74,13 +74,6 @@ class EchoStateNetwork:
         self.W_res = None
         self.W_out = None
         self.W_fb = None
-
-        # Output a table of the weight matrices dimensions for user
-
-        # Might not keep. Operations should ideally be kept separate from the network's formation.
-        # Ideally, the properties of a generally well-trained network should be independent of the data it operates on.
-        self.train_length = ESN_params['train_length']
-        self.prediction_length = ESN_params['prediction_length']
 
 
     def initialize_reservoir(self, distribution: str = 'normal') -> None:
@@ -122,11 +115,8 @@ class EchoStateNetwork:
 
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
-                self.W_fb = self.rng.normal(loc=0, scale=1, size=(self.N, self.L + self.bias)).astype(self.dtype)
+                self.W_fb = self.rng.normal(loc=0, scale=1, size=(self.N, self.L)).astype(self.dtype)
                 self.W_fb /= np.abs(self.W_fb).max()
-
-                if self.bias:
-                    self.W_fb[:, 0] = 1
 
             else:
                 self.W_fb = None
@@ -147,11 +137,8 @@ class EchoStateNetwork:
 
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
-                self.W_fb = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.L + self.bias)).astype(self.dtype)
+                self.W_fb = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.L)).astype(self.dtype)
                 self.W_fb /= np.abs(self.W_fb).max()
-
-                if self.bias:
-                    self.W_fb[:, 0] = 1
 
             else:
                 self.W_fb = None
@@ -302,7 +289,7 @@ class EchoStateNetwork:
         return inputs * self.input_scaling[:, None]
 
 
-    def _scale_feedback(self, targets) -> np.ndarray:
+    def _scale_teachers(self, targets) -> np.ndarray:
         """
         Applies feedback scaling factors
 
@@ -347,8 +334,7 @@ class EchoStateNetwork:
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state + self.W_fb @ target
         return (1 - self.leak) * prev_state + self.leak * np.tanh(nonlinear_contribution)
 
-
-    def acquire_reservoir_states(self, inputs, teachers=None):
+    def acquire_reservoir_states(self, inputs, visualized_neurons: int, burn_in: int, teachers=None):
 
         """
         Perform dimensionality expansion on the data used to train the network. Conventionally, this will usually be
@@ -356,21 +342,29 @@ class EchoStateNetwork:
 
         :param inputs: Input sequence with shape (K, timesteps).
         :param teachers: Target sequence with shape (L, timesteps). Only required if feedback is enabled.
+        :param visualized_neurons: The number of neurons to be plotted. This parameter is only necessary if verbosity is
+        greater than 1.
+        :param burn_in: The number of initial timesteps to omit from the output matrix.
 
         :return: Reservoir states with shape (N, timesteps).
         """
 
         # Pre-scale the inputs.
         scaled_inputs = self._scale_inputs(inputs) if self.input_scaling is not None else inputs
+        if self.bias:
+            scaled_inputs = np.vstack([np.ones((1, scaled_inputs.shape[1]), dtype=self.dtype), scaled_inputs])
 
         # Pre-scale the targets for feedback, but only if feedback is enabled.
         scaled_teachers = None
         if self.enable_feedback:
             if teachers is None:
                 raise ValueError("Feedback is enabled but no output sequence has been provided for state acquisition.")
-            scaled_teachers = self.teacher_scaling(teachers) if self.teacher_scaling is not None else teachers
-            # Prepend a column of zeros to allow for feedback at t=0
-            scaled_teachers = np.hstack([np.zeros((self.L, 1), dtype=self.dtype), scaled_teachers])
+            scaled_teachers = self._scale_teachers(teachers) if self.teacher_scaling is not None else teachers
+
+        # Validate the number of neurons to visualize.
+        if visualized_neurons > self.N:
+            raise ValueError(
+                f"visualized_neurons ({visualized_neurons}) cannot exceed the number of reservoir neurons ({self.N}).")
 
         # Initialize the base reservoir state, and determine the "length" of the signal.
         timesteps = scaled_inputs.shape[1]
@@ -378,16 +372,25 @@ class EchoStateNetwork:
 
         # Iterate over the timesteps and perform dimensionality expansion to generate reservoir states.
         if self.enable_feedback:
-            for t in range(timesteps):
-                input_pattern = scaled_inputs[:, t:t+1]  # Maintains the 2D shape of the input.
-                teacher_pattern = scaled_teachers[:, t:t + 1]  # Always use y[n-1] for feedback
-                states[:, t:t + 1] = self._update_with_feedback(states[:, t - 1:t],
-                                                                input_pattern, teacher_pattern).astype(self.dtype)
-
+            for t in range(1, timesteps):
+                states[:, t] = self._update_with_feedback(prev_state=states[:, t - 1],
+                                                          input_pattern=scaled_inputs[:, t],
+                                                          target=scaled_teachers[:, t-1]).astype(self.dtype)
         else:
             for t in range(timesteps):
-                input_pattern = scaled_inputs[:, t:t+1]  # Maintains the 2D shape of the input.
-                states[:, t:t+1] = self._update_no_feedback(states[:, t-1:t], input_pattern).astype(self.dtype)
+                states[:, t] = self._update_no_feedback(prev_state=states[:, t-1],
+                                                        input_pattern=scaled_inputs[:, t]).astype(self.dtype)
+
+        # Printing a subset of the reservoir activations over time.
+        if self.verbose > 1:
+            plt.figure(figsize=(10, 6))
+            plt.title(f"Activation of {visualized_neurons} Reservoir Neurons Over Time", fontsize=12)
+            plt.ylabel("Node Activation", fontsize=10)
+            plt.xlabel("Time Steps", fontsize=10)
+            for i in range(visualized_neurons):
+                plt.plot(range(timesteps), states[i, :], lw=0.5, label=f"Neuron {i + 1}")
+            plt.legend(fontsize=8, loc="upper right", ncol=2, frameon=False)
+            plt.tight_layout()
+            plt.show()
 
         return states.astype(self.dtype)
-
