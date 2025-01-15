@@ -80,6 +80,11 @@ class EchoStateNetwork:
         self.XX_T = None  # The square matrix of the reservoir outputs.
         self.YX_T = None  # The matrix product of the target outputs with the transpose of the concatenated vector.
 
+        # Later these will be required for producing extra reservoir states or to forecast system evolutions.
+        self.last_state = None
+        self.last_input = None
+        self.last_output = None
+
 
     def initialize_reservoir(self, distribution: str = 'normal') -> None:
 
@@ -320,14 +325,21 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
+        print(f"Previous state shape: {prev_state.shape}")
+        print(f"Input pattern shape: {input_pattern.shape}")
+
         # The matrix products for the inputs and previous reservoir sates.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state
+        nonlinear_contribution = nonlinear_contribution.reshape(-1, 1)
+        print(f"Nonlinear contribution shape: {nonlinear_contribution.shape}")
 
         # Generate reproducible noise with a Gaussian distribution.
         random_noise = self.rng.normal(loc=0, scale=1, size=(self.N, 1)) * self.noise
+        print(f"Noise shape: {random_noise.shape}")
 
         # Compute the pre-activation, including the noise term.
         preactivation = np.tanh(nonlinear_contribution) + random_noise
+        print(f"Preactivation shape: {preactivation.shape}")
 
 
         return (1 - self.leak) * prev_state + self.leak * preactivation
@@ -347,6 +359,7 @@ class EchoStateNetwork:
 
         # The matrix products for the inputs, previous reservoir sates amd feedback.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state + self.W_fb @ target
+        nonlinear_contribution = nonlinear_contribution.reshape(-1, 1)
 
         # Generate reproducible noise with a Gaussian distribution.
         random_noise = self.rng.normal(loc=0, scale=1, size=(self.N, 1)) * self.noise
@@ -356,20 +369,29 @@ class EchoStateNetwork:
 
         return (1 - self.leak) * prev_state + preactivation
 
-    def acquire_reservoir_states(self, inputs, visualized_neurons: int, teachers=None):
+    def acquire_reservoir_states(self, inputs: np.ndarray, teachers: np.ndarray, visualized_neurons: int):
 
         """
         Perform dimensionality expansion on the data used to train the network. Conventionally, this will usually be
         the past of a signal, for which forecasting is used to predict the signal's evolution. #
 
         :param inputs: Input sequence with shape (K, timesteps).
-        :param teachers: Target sequence with shape (L, timesteps). Only required if feedback is enabled.
+        :param teachers: Target sequence with shape (L, timesteps). Not optional. Required for regression.
         :param visualized_neurons: The number of neurons to be plotted. This parameter is only necessary if verbosity is
         greater than 1.
-        :param burn_in: The number of initial timesteps to omit from the output matrix.
 
         :return: Reservoir states with shape (N, timesteps).
         """
+
+        if teachers is None:
+            raise ValueError("Training targets (teachers) must be provided for training and/or state acquisition.")
+
+        # Validate that inputs and teachers have the same number of timesteps.
+        if teachers is not None and inputs.shape[1] != teachers.shape[1]:
+            raise ValueError(
+                f"Mismatch in timesteps: Inputs have {inputs.shape[1]} timesteps, "
+                f"while teachers have {teachers.shape[1]} timesteps."
+            )
 
         # Pre-scale the inputs. Concatenate the bias onto the input vector after scaling.
         scaled_inputs = self._scale_inputs(inputs) if self.input_scaling is not None else inputs
@@ -377,11 +399,7 @@ class EchoStateNetwork:
             scaled_inputs = np.vstack([np.ones((1, scaled_inputs.shape[1]), dtype=self.dtype), scaled_inputs])
 
         # Pre-scale the targets for feedback, but only if feedback is enabled.
-        scaled_teachers = None
-        if self.enable_feedback:
-            if teachers is None:
-                raise ValueError("Feedback is enabled but no output sequence has been provided for state acquisition.")
-            scaled_teachers = self._scale_teachers(teachers) if self.teacher_scaling is not None else teachers
+        scaled_teachers = self._scale_teachers(teachers) if self.teacher_scaling is not None else teachers
 
         # Validate the number of neurons to visualize.
         if visualized_neurons > self.N:
@@ -389,7 +407,7 @@ class EchoStateNetwork:
                 f"visualized_neurons ({visualized_neurons}) cannot exceed the number of reservoir neurons ({self.N}).")
 
         # Allocate memory for the matrices utilised in training.
-        full_state_dim = 1 + self.K + self.N
+        full_state_dim = int(self.bias) + self.K + self.N
         self.XX_T = np.zeros(shape=(full_state_dim, full_state_dim), dtype=self.dtype)
         self.YX_T = np.zeros(shape=(self.L, full_state_dim))
 
@@ -397,36 +415,40 @@ class EchoStateNetwork:
         timesteps = scaled_inputs.shape[1]
         states = np.zeros(shape=(self.N, timesteps), dtype=self.dtype)
 
-        # We add a bias onto each full state vector, so we generate that now.
-        bias_column = np.ones((1, 1), dtype=self.dtype)
-
         # Iterate over the timesteps and perform dimensionality expansion to generate reservoir states.
         # With feedback:
         if self.enable_feedback:
             for t in range(1, timesteps):
-                states[:, t] = self._update_with_feedback(prev_state=states[:, t - 1],
-                                                          input_pattern=scaled_inputs[:, t],
-                                                          target=scaled_teachers[:, t-1]).astype(self.dtype)
+                states[:, t:t+1] = self._update_with_feedback(prev_state=states[:, t - 1:t],
+                                                              input_pattern=scaled_inputs[:, t:t+1],
+                                                              target=scaled_teachers[:, t-1:t]).astype(self.dtype)
 
                 # Create augmented state vector [1; u[t]; x[t]] for this timestep.
-                augmented_state = np.vstack(tup=[bias_column, scaled_inputs[:, t], states[:, t]])
+                augmented_state = np.vstack(tup=[scaled_inputs[:, t:t+1], states[:, t:t+1]])
 
                 # Update XX^T and YX^T matrices incrementally.
                 self.XX_T += augmented_state @ augmented_state.T
-                self.YX_T += scaled_teachers[:, t:t + 1] @ augmented_state.T
+                self.YX_T += scaled_teachers[:, t:t+1] @ augmented_state.T
 
         # Without feedback:
         else:
             for t in range(timesteps):
-                states[:, t] = self._update_no_feedback(prev_state=states[:, t-1],
-                                                        input_pattern=scaled_inputs[:, t]).astype(self.dtype)
+                states[:, t:t+1] = self._update_no_feedback(prev_state=states[:, t-1:t],
+                                                            input_pattern=scaled_inputs[:, t:t+1]).astype(self.dtype)
 
                 # Create augmented state vector [1; u[t]; x[t]] for this timestep.
-                augmented_state = np.vstack(tup=[bias_column, scaled_inputs[:, t], states[:, t]])
+                augmented_state = np.vstack(tup=[scaled_inputs[:, t:t+1], states[:, t:t+1]])
 
                 # Update XX^T and YX^T matrices incrementally.
                 self.XX_T += augmented_state @ augmented_state.T
-                self.YX_T += scaled_teachers[:, t:t + 1] @ augmented_state.T
+                self.YX_T += scaled_teachers[:, t:t+1] @ augmented_state.T
+
+
+        # Final step, retain the final states for continuation or forecasting later.
+        self.last_state = states[:, -1]
+        self.last_input = scaled_inputs[:, -1]
+        self.last_output = scaled_teachers[:, -1]
+
 
         # Printing a subset of the reservoir activations over time.
         if self.verbose > 1:
@@ -441,3 +463,37 @@ class EchoStateNetwork:
             plt.show()
 
         return states.astype(self.dtype)
+
+
+    def tikhonov_regression(self, burn_in: int, ridge: float) -> np.ndarray:
+
+        """
+        Performs Tikhonov (ridge) regression using the reservoir states in a one-step optimisation approach. The
+        user should experiment with different values of burn_in and ridge to find what best suits their data.
+        You should be avoiding large elements in the readout matrix, which the ridge parameter helps in mitigating.
+
+        :param burn_in: The number of initial reservoir states to discard, you only need to remove those that
+        mis-represent your data.
+        :param ridge: The penalty applied to readout weight matrix to prevent any elements from dominating.
+
+        :return: A readout weight matrix used for further predictions or system-evolution forecasting.
+        """
+
+        # Eliminate the transient states created by the reservoir. Plotting the reservoir states should provide a
+        # visual indicator of how long the transient period lasts.
+        truncated_XX_T = self.XX_T[:, burn_in:]
+        truncated_YX_T = self.YX_T[:, burn_in:]
+
+        # Apply a penalty to the diagonal elements of XX^T.
+        regularized_XX_T = truncated_XX_T + (ridge * np.eye(truncated_XX_T.shape[0], dtype=self.dtype))
+
+        # Using a linear solver that will no doubt be better than anything I can make.
+        # We want to ensure that XX^T is symmetric for the following to work.
+        self.W_out = linalg.solve(regularized_XX_T, truncated_YX_T, assume_a='sym').T
+
+        if self.verbose > 0:
+            print(f"Readout matrix W_out generated with shape {self.W_out.shape}")
+            max_element = np.max(np.abs(self.W_out))
+            print(f"Max element in W_out: {max_element:.2e}")
+
+        return self.W_out
