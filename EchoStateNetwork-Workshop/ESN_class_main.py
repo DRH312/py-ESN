@@ -46,6 +46,7 @@ class EchoStateNetwork:
         self.connectivity = ESN_params['connectivity']
         self.input_scaling = ESN_params['input_scaling']
         self.sr = ESN_params['spectral_radius']
+        self.noise = ESN_params['noise']
 
         # Parameters that affect the structure of the network.
         self.enable_feedback = ESN_params['enable_feedback']
@@ -61,7 +62,7 @@ class EchoStateNetwork:
 
         # Cementing the datatype which will be maintained across the whole series of computations.
         self.dtype = dtype
-        if self.dtype not in ["float64", "float32", "float16"]:
+        if self.dtype not in ["float128", "float64", "float32", "float16"]:
             raise ValueError(f"Selected datatype must adhere to {['float64', 'float32', 'float16']}")
 
         # Ensuring that the verbosity scale is an integer, and that it falls into the acceptable range.
@@ -74,6 +75,10 @@ class EchoStateNetwork:
         self.W_res = None
         self.W_out = None
         self.W_fb = None
+
+        # Matrices relevant for training readout. They will be properly initialised during state acquisition.
+        self.XX_T = None  # The square matrix of the reservoir outputs.
+        self.YX_T = None  # The matrix product of the target outputs with the transpose of the concatenated vector.
 
 
     def initialize_reservoir(self, distribution: str = 'normal') -> None:
@@ -315,8 +320,17 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
+        # The matrix products for the inputs and previous reservoir sates.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state
-        return (1 - self.leak) * prev_state + self.leak * np.tanh(nonlinear_contribution)
+
+        # Generate reproducible noise with a Gaussian distribution.
+        random_noise = self.rng.normal(loc=0, scale=1, size=(self.N, 1)) * self.noise
+
+        # Compute the pre-activation, including the noise term.
+        preactivation = np.tanh(nonlinear_contribution) + random_noise
+
+
+        return (1 - self.leak) * prev_state + self.leak * preactivation
 
 
     def _update_with_feedback(self, prev_state, input_pattern, target) -> np.ndarray:
@@ -331,10 +345,18 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
+        # The matrix products for the inputs, previous reservoir sates amd feedback.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state + self.W_fb @ target
-        return (1 - self.leak) * prev_state + self.leak * np.tanh(nonlinear_contribution)
 
-    def acquire_reservoir_states(self, inputs, visualized_neurons: int, burn_in: int, teachers=None):
+        # Generate reproducible noise with a Gaussian distribution.
+        random_noise = self.rng.normal(loc=0, scale=1, size=(self.N, 1)) * self.noise
+
+        # Compute the pre-activation, including the noise term.
+        preactivation = np.tanh(nonlinear_contribution) + random_noise
+
+        return (1 - self.leak) * prev_state + preactivation
+
+    def acquire_reservoir_states(self, inputs, visualized_neurons: int, teachers=None):
 
         """
         Perform dimensionality expansion on the data used to train the network. Conventionally, this will usually be
@@ -349,7 +371,7 @@ class EchoStateNetwork:
         :return: Reservoir states with shape (N, timesteps).
         """
 
-        # Pre-scale the inputs.
+        # Pre-scale the inputs. Concatenate the bias onto the input vector after scaling.
         scaled_inputs = self._scale_inputs(inputs) if self.input_scaling is not None else inputs
         if self.bias:
             scaled_inputs = np.vstack([np.ones((1, scaled_inputs.shape[1]), dtype=self.dtype), scaled_inputs])
@@ -366,25 +388,50 @@ class EchoStateNetwork:
             raise ValueError(
                 f"visualized_neurons ({visualized_neurons}) cannot exceed the number of reservoir neurons ({self.N}).")
 
+        # Allocate memory for the matrices utilised in training.
+        full_state_dim = 1 + self.K + self.N
+        self.XX_T = np.zeros(shape=(full_state_dim, full_state_dim), dtype=self.dtype)
+        self.YX_T = np.zeros(shape=(self.L, full_state_dim))
+
         # Initialize the base reservoir state, and determine the "length" of the signal.
         timesteps = scaled_inputs.shape[1]
         states = np.zeros(shape=(self.N, timesteps), dtype=self.dtype)
 
+        # We add a bias onto each full state vector, so we generate that now.
+        bias_column = np.ones((1, 1), dtype=self.dtype)
+
         # Iterate over the timesteps and perform dimensionality expansion to generate reservoir states.
+        # With feedback:
         if self.enable_feedback:
             for t in range(1, timesteps):
                 states[:, t] = self._update_with_feedback(prev_state=states[:, t - 1],
                                                           input_pattern=scaled_inputs[:, t],
                                                           target=scaled_teachers[:, t-1]).astype(self.dtype)
+
+                # Create augmented state vector [1; u[t]; x[t]] for this timestep.
+                augmented_state = np.vstack(tup=[bias_column, scaled_inputs[:, t], states[:, t]])
+
+                # Update XX^T and YX^T matrices incrementally.
+                self.XX_T += augmented_state @ augmented_state.T
+                self.YX_T += scaled_teachers[:, t:t + 1] @ augmented_state.T
+
+        # Without feedback:
         else:
             for t in range(timesteps):
                 states[:, t] = self._update_no_feedback(prev_state=states[:, t-1],
                                                         input_pattern=scaled_inputs[:, t]).astype(self.dtype)
 
+                # Create augmented state vector [1; u[t]; x[t]] for this timestep.
+                augmented_state = np.vstack(tup=[bias_column, scaled_inputs[:, t], states[:, t]])
+
+                # Update XX^T and YX^T matrices incrementally.
+                self.XX_T += augmented_state @ augmented_state.T
+                self.YX_T += scaled_teachers[:, t:t + 1] @ augmented_state.T
+
         # Printing a subset of the reservoir activations over time.
         if self.verbose > 1:
             plt.figure(figsize=(10, 6))
-            plt.title(f"Activation of {visualized_neurons} Reservoir Neurons Over Time", fontsize=12)
+            plt.title(f"Activation of {int(visualized_neurons)} Reservoir Neurons Over Time", fontsize=12)
             plt.ylabel("Node Activation", fontsize=10)
             plt.xlabel("Time Steps", fontsize=10)
             for i in range(visualized_neurons):
