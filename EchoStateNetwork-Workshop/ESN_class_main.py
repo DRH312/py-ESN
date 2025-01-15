@@ -52,6 +52,8 @@ class EchoStateNetwork:
         self.enable_feedback = ESN_params['enable_feedback']
         if self.enable_feedback:
             self.teacher_scaling = ESN_params['teacher_scaling']
+        else:
+            self.teacher_scaling = None
 
         # Determines random number generation.
         self.seed = int(ESN_params['seed'])
@@ -357,7 +359,7 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
-        # The matrix products for the inputs, previous reservoir sates amd feedback.
+        # The matrix products for the inputs, previous reservoir states and feedback.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state + self.W_fb @ target
         nonlinear_contribution = nonlinear_contribution.reshape(-1, 1)
 
@@ -432,7 +434,7 @@ class EchoStateNetwork:
 
         # Without feedback:
         else:
-            for t in range(timesteps):
+            for t in range(1, timesteps):
                 states[:, t:t+1] = self._update_no_feedback(prev_state=states[:, t-1:t],
                                                             input_pattern=scaled_inputs[:, t:t+1]).astype(self.dtype)
 
@@ -462,6 +464,10 @@ class EchoStateNetwork:
             plt.tight_layout()
             plt.show()
 
+        if self.verbose > 1:
+            print(f"XX^T has shape: {self.XX_T.shape}")
+            print(f"YX^T has shape: {self.YX_T.shape}")
+
         return states.astype(self.dtype)
 
 
@@ -489,11 +495,41 @@ class EchoStateNetwork:
 
         # Using a linear solver that will no doubt be better than anything I can make.
         # We want to ensure that XX^T is symmetric for the following to work.
-        self.W_out = linalg.solve(regularized_XX_T, truncated_YX_T, assume_a='sym').T
+        self.W_out = linalg.solve(regularized_XX_T, truncated_YX_T.T, assume_a='sym').T
 
         if self.verbose > 0:
-            print(f"Readout matrix W_out generated with shape {self.W_out.shape}")
-            max_element = np.max(np.abs(self.W_out))
-            print(f"Max element in W_out: {max_element:.2e}")
+            print(f"Readout weight matrix shape: {self.W_out.shape}")
+
+            # If verbosity is high, plot the histogram of the readout weights
+        if self.verbose > 1:
+            self._plot_readout_histogram()
+
+            # If verbosity is even higher, save the weights to a file
+        if self.verbose > 2:
+            current_dir = os.getcwd()
+            parent_dir = os.path.dirname(current_dir)
+            output_dir = os.path.join(parent_dir, "Generated_Weights")
+            os.makedirs(output_dir, exist_ok=True)
+
+            pd.DataFrame(self.W_out).to_csv(
+                os.path.join(output_dir, f"W_out-{timestamp}.csv"), index=False, header=False
+            )
+            print(f"Readout weights saved to {output_dir}")
 
         return self.W_out
+
+    def _plot_readout_histogram(self) -> None:
+        """
+        Plots a histogram of the readout weight matrix elements.
+        """
+        if self.W_out is None:
+            raise ValueError("Readout weight matrix has not been computed yet.")
+
+        plt.figure(figsize=(10, 6))
+        plt.hist(self.W_out.flatten(), bins=50, density=True, color='purple', edgecolor='black', alpha=0.75)
+        plt.title("Readout Weight Distribution")
+        plt.xlabel("Weight Value")
+        plt.ylabel("Density")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
