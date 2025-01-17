@@ -386,7 +386,7 @@ class EchoStateNetwork:
         """
 
         if teachers is None:
-            raise ValueError("Training targets (teachers) must be provided for training and/or state acquisition.")
+            raise ValueError("Training targets (teachers) must be provided regardless of whether feedback is enabled.")
 
         # Validate that inputs and teachers have the same number of timesteps.
         if teachers is not None and inputs.shape[1] != teachers.shape[1]:
@@ -411,7 +411,7 @@ class EchoStateNetwork:
         # Allocate memory for the matrices utilised in training.
         full_state_dim = int(self.bias) + self.K + self.N
         self.XX_T = np.zeros(shape=(full_state_dim, full_state_dim), dtype=self.dtype)
-        self.YX_T = np.zeros(shape=(self.L, full_state_dim))
+        self.YX_T = np.zeros(shape=(self.L, full_state_dim), dtype=self.dtype)
 
         # Initialize the base reservoir state, and determine the "length" of the signal.
         timesteps = scaled_inputs.shape[1]
@@ -430,7 +430,7 @@ class EchoStateNetwork:
 
                 # Update XX^T and YX^T matrices incrementally.
                 self.XX_T += augmented_state @ augmented_state.T
-                self.YX_T += scaled_teachers[:, t:t+1] @ augmented_state.T
+                self.YX_T += teachers[:, t:t+1] @ augmented_state.T
 
         # Without feedback:
         else:
@@ -443,7 +443,7 @@ class EchoStateNetwork:
 
                 # Update XX^T and YX^T matrices incrementally.
                 self.XX_T += augmented_state @ augmented_state.T
-                self.YX_T += scaled_teachers[:, t:t+1] @ augmented_state.T
+                self.YX_T += teachers[:, t:t+1] @ augmented_state.T
 
 
         # Final step, retain the final states for continuation or forecasting later.
@@ -533,3 +533,17 @@ class EchoStateNetwork:
         plt.grid(True)
         plt.tight_layout()
         plt.show()
+
+
+    def _forecast(self, inputs, continuation=True):
+        """
+        Forecast the evolution of a timeseries using the trained Echo State Network.
+
+        :param inputs:
+        :param continuation: Whether the network is
+        :return:
+        """
+
+        if self.W_out is None:
+            raise ValueError("Readout Weights are undefined. The network must be trained before it can forecast.")
+
