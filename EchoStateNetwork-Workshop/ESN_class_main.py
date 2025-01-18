@@ -36,10 +36,11 @@ class EchoStateNetwork:
         :param verbose:
         """
 
-        # Model dimensions:
+        # Model structure:
         self.K = ESN_params['input_dim']  # The number of features in the input vector.
         self.N = ESN_params['nodes']  # The number of neurons in the reservoir.
         self.L = ESN_params['output_dim']  # The number of features in the output vector.
+        self.distribution = ESN_params['distribution']
 
         # Model hyperparameters:
         self.leak = ESN_params['leak']
@@ -88,18 +89,17 @@ class EchoStateNetwork:
         self.last_output = None
 
 
-    def initialize_reservoir(self, distribution: str = 'normal') -> None:
+    def initialize_reservoir(self, save_weights=True) -> None:
 
         """
         Initializes an N*N sparse adjacency matrix that defines the reservoir of the ESN. The nonzero elements of the
         matrix can be sampled from either a uniform or standard normal distribution.
 
-        :param distribution:  Distribution to sample the nonzero reservoir weights from.
         :return: csr_matrix: Sparse reservoir matrix with the desired spectral radius.
         """
 
         # Check that the reservoir distribution requested is a valid input.
-        if distribution not in ["uniform", "normal"]:
+        if self.distribution not in ["uniform", "normal"]:
             raise ValueError(f"Selected distribution must be 'uniform' or 'normal'")
 
         # Generate sparsity mask. This should be reproducible amongst consistent seeds.
@@ -107,7 +107,7 @@ class EchoStateNetwork:
         num_nonzeros = mask.sum()
 
 
-        if distribution == 'normal':
+        if self.distribution == 'normal':
             # Sample reservoir weights from a standard Gaussian distribution.
 
             # Initializing the reservoir adjacency matrix.
@@ -134,7 +134,7 @@ class EchoStateNetwork:
                 self.W_fb = None
 
 
-        elif distribution == 'uniform':
+        elif self.distribution == 'uniform':
             # Sample reservoir weights from a symmetric uniform distribution.
 
             # Initializing the reservoir adjacency matrix.
@@ -156,9 +156,23 @@ class EchoStateNetwork:
                 self.W_fb = None
 
 
+        # We apply scaling onto the weight matrices instead of the inputs:
+        if self.input_scaling is not None:
+            if self.input_scaling.shape != (self.K + self.bias, 1):
+                raise ValueError(f"The scaling vector should have shape ({self.K + self.bias}, 1).")
+            self.W_in = self.W_in * self.input_scaling.T
+
+        if self.teacher_scaling is not None:
+            if self.teacher_scaling.shape != (self.L, 1):
+                raise ValueError(f"The scaling vector should have shape ({self.L}, 1).")
+            self.W_fb = self.W_fb * self.teacher_scaling.T
+
+
+        # Convert W_res into a sparse matrix to speed up state acquisition later.
         row_indices, col_indices = np.where(mask)
         self.W_res = sparse.csr_matrix((self.W_res, (row_indices, col_indices)),
                                        shape=(self.N, self.N), dtype=self.dtype)
+
 
         if self.verbose > 0:
             print("Reservoir adjacency matrix initialized. Beginning spectral radius scaling.")
@@ -183,31 +197,35 @@ class EchoStateNetwork:
             else:
                 print(f"{'W_fb':<15}{'None':<20}")
 
-        if self.verbose > 2:
-            print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
+        if save_weights:
+            self._save_weights_locally()
 
-            current_dir = os.getcwd()
-            parent_dir = os.path.dirname(current_dir)
 
-            # Define the output directory at the parent level
-            output_dir = os.path.join(parent_dir, "Generated_Weights")
-            os.makedirs(output_dir, exist_ok=True)
+    def _save_weights_locally(self) -> None:
+        print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
 
-            # Save reservoir weights.
-            W_res_dense = self.W_res.toarray()  # Converting to dense for uploading to CSV.
-            pd.DataFrame(W_res_dense).to_csv(os.path.join(output_dir, f"W_res-{timestamp}.csv"), index=False,
-                                             header=False)
+        current_dir = os.getcwd()
+        parent_dir = os.path.dirname(current_dir)
 
-            # Save W_in
-            pd.DataFrame(self.W_in).to_csv(os.path.join(output_dir, f"W_in-{timestamp}.csv"), index=False,
+        # Define the output directory at the parent level
+        output_dir = os.path.join(parent_dir, "Generated_Weights")
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save reservoir weights.
+        W_res_dense = self.W_res.toarray()  # Converting to dense for uploading to CSV.
+        pd.DataFrame(W_res_dense).to_csv(os.path.join(output_dir, f"W_res-{timestamp}.csv"), index=False,
+                                         header=False)
+
+        # Save W_in
+        pd.DataFrame(self.W_in).to_csv(os.path.join(output_dir, f"W_in-{timestamp}.csv"), index=False,
+                                       header=False)
+
+        # Save W_fb if feedback is enabled
+        if self.W_fb is not None:
+            pd.DataFrame(self.W_fb).to_csv(os.path.join(output_dir, f"W_fb-{timestamp}.csv"), index=False,
                                            header=False)
 
-            # Save W_fb if feedback is enabled
-            if self.W_fb is not None:
-                pd.DataFrame(self.W_fb).to_csv(os.path.join(output_dir, f"W_fb-{timestamp}.csv"), index=False,
-                                               header=False)
-
-            print(f"Network matrices uploaded to {output_dir}")
+        print(f"Network matrices uploaded to {output_dir}")
 
 
     def _scale_spectral_radius(self) -> None:
@@ -256,14 +274,14 @@ class EchoStateNetwork:
             fig, axes = plt.subplots(1, num_plots, figsize=(15, 5))
 
             # Plot histogram for the input weights
-            axes[0].hist(self.W_res.data, bins=50, density=True, color='orange', edgecolor='black', alpha=0.75)
+            axes[0].hist(self.W_in.flatten(), bins=50, density=True, color='orange', edgecolor='black', alpha=0.75)
             axes[0].set_title("Input Weights Distribution")
             axes[0].set_xlabel("Value")
             axes[0].set_ylabel("Density")
             axes[0].grid(True)
 
             # Plot histogram for the reservoir weights
-            axes[1].hist(self.W_in.flatten(), bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
+            axes[1].hist(self.W_res.data, bins=50, density=True, color='blue', edgecolor='black', alpha=0.75)
             axes[1].set_title("Reservoir Weights Distribution")
             axes[1].set_xlabel("Value")
             axes[1].set_ylabel("Density")
@@ -286,37 +304,6 @@ class EchoStateNetwork:
             plt.show()
 
 
-    def _scale_inputs(self, inputs) -> np.ndarray:
-        """
-        Applies element-wise scaling to the entire sequence of inputs.
-
-        :param inputs: An input sequence in the form of an array with shape (K, timesteps).
-        :return: A scaled input sequence of the same form and shape.
-        """
-
-        if inputs.shape[0] != self.K:
-            raise ValueError(
-                f"Input features ({inputs.shape[0]}) does not match the number of input nodes, ({self.K}).")
-
-        return inputs * self.input_scaling[:, None]
-
-
-    def _scale_teachers(self, targets) -> np.ndarray:
-        """
-        Applies feedback scaling factors
-
-        :param targets: A target sequence in the form of an array with shape (L, timesteps).
-
-        :return: A scaled target sequence of the same form and shape.
-        """
-
-        if targets.shape[0] != self.L:
-            raise ValueError(
-                f"Input features ({targets.shape[0]}) does not match the number of input nodes, ({self.L}).")
-
-        return targets * self.teacher_scaling[:, None]
-
-
     def _update_no_feedback(self, prev_state, input_pattern) -> np.ndarray:
         """
         Performs a singular reservoir update. No feedback is utilised here.
@@ -327,21 +314,15 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
-        print(f"Previous state shape: {prev_state.shape}")
-        print(f"Input pattern shape: {input_pattern.shape}")
-
         # The matrix products for the inputs and previous reservoir sates.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state
         nonlinear_contribution = nonlinear_contribution.reshape(-1, 1)
-        print(f"Nonlinear contribution shape: {nonlinear_contribution.shape}")
 
         # Generate reproducible noise with a Gaussian distribution.
         random_noise = self.rng.normal(loc=0, scale=1, size=(self.N, 1)) * self.noise
-        print(f"Noise shape: {random_noise.shape}")
 
         # Compute the pre-activation, including the noise term.
         preactivation = np.tanh(nonlinear_contribution) + random_noise
-        print(f"Preactivation shape: {preactivation.shape}")
 
 
         return (1 - self.leak) * prev_state + self.leak * preactivation
@@ -395,13 +376,8 @@ class EchoStateNetwork:
                 f"while teachers have {teachers.shape[1]} timesteps."
             )
 
-        # Pre-scale the inputs. Concatenate the bias onto the input vector after scaling.
-        scaled_inputs = self._scale_inputs(inputs) if self.input_scaling is not None else inputs
         if self.bias:
-            scaled_inputs = np.vstack([np.ones((1, scaled_inputs.shape[1]), dtype=self.dtype), scaled_inputs])
-
-        # Pre-scale the targets for feedback, but only if feedback is enabled.
-        scaled_teachers = self._scale_teachers(teachers) if self.teacher_scaling is not None else teachers
+            inputs = np.vstack([np.ones((1, inputs.shape[1]), dtype=self.dtype), inputs])
 
         # Validate the number of neurons to visualize.
         if visualized_neurons > self.N:
@@ -414,7 +390,7 @@ class EchoStateNetwork:
         self.YX_T = np.zeros(shape=(self.L, full_state_dim), dtype=self.dtype)
 
         # Initialize the base reservoir state, and determine the "length" of the signal.
-        timesteps = scaled_inputs.shape[1]
+        timesteps = inputs.shape[1]
         states = np.zeros(shape=(self.N, timesteps), dtype=self.dtype)
 
         # Iterate over the timesteps and perform dimensionality expansion to generate reservoir states.
@@ -422,11 +398,11 @@ class EchoStateNetwork:
         if self.enable_feedback:
             for t in range(1, timesteps):
                 states[:, t:t+1] = self._update_with_feedback(prev_state=states[:, t - 1:t],
-                                                              input_pattern=scaled_inputs[:, t:t+1],
-                                                              target=scaled_teachers[:, t-1:t]).astype(self.dtype)
+                                                              input_pattern=inputs[:, t:t+1],
+                                                              target=teachers[:, t-1:t]).astype(self.dtype)
 
                 # Create augmented state vector [1; u[t]; x[t]] for this timestep.
-                augmented_state = np.vstack(tup=[scaled_inputs[:, t:t+1], states[:, t:t+1]])
+                augmented_state = np.vstack(tup=[inputs[:, t:t+1], states[:, t:t+1]])
 
                 # Update XX^T and YX^T matrices incrementally.
                 self.XX_T += augmented_state @ augmented_state.T
@@ -436,10 +412,10 @@ class EchoStateNetwork:
         else:
             for t in range(1, timesteps):
                 states[:, t:t+1] = self._update_no_feedback(prev_state=states[:, t-1:t],
-                                                            input_pattern=scaled_inputs[:, t:t+1]).astype(self.dtype)
+                                                            input_pattern=inputs[:, t:t+1]).astype(self.dtype)
 
                 # Create augmented state vector [1; u[t]; x[t]] for this timestep.
-                augmented_state = np.vstack(tup=[scaled_inputs[:, t:t+1], states[:, t:t+1]])
+                augmented_state = np.vstack(tup=[inputs[:, t:t+1], states[:, t:t+1]])
 
                 # Update XX^T and YX^T matrices incrementally.
                 self.XX_T += augmented_state @ augmented_state.T
@@ -448,8 +424,8 @@ class EchoStateNetwork:
 
         # Final step, retain the final states for continuation or forecasting later.
         self.last_state = states[:, -1]
-        self.last_input = scaled_inputs[:, -1]
-        self.last_output = scaled_teachers[:, -1]
+        self.last_input = inputs[:, -1]
+        self.last_output = teachers[:, -1]
 
 
         # Printing a subset of the reservoir activations over time.

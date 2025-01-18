@@ -49,3 +49,34 @@ def estimate_spectral_radius(self, max_iter=1000, tol=1e-6):
     if self.verbose > 0:
         print(f"Power iteration failed to converge within {max_iter} iterations. Returning last estimate {eig:.6f}")
     return eig
+
+
+    def _scale_inputs(self, inputs) -> np.ndarray:
+        """
+        Applies element-wise scaling to the entire sequence of inputs.
+
+        :param inputs: An input sequence in the form of an array with shape (K, timesteps).
+        :return: A scaled input sequence of the same form and shape.
+        """
+
+        if inputs.shape[0] != self.K:
+            raise ValueError(
+                f"Input features ({inputs.shape[0]}) does not match the number of input nodes, ({self.K}).")
+
+        return inputs * self.input_scaling[:, None]
+
+
+    def _scale_teachers(self, targets) -> np.ndarray:
+        """
+        Applies feedback scaling factors
+
+        :param targets: A target sequence in the form of an array with shape (L, timesteps).
+
+        :return: A scaled target sequence of the same form and shape.
+        """
+
+        if targets.shape[0] != self.L:
+            raise ValueError(
+                f"Input features ({targets.shape[0]}) does not match the number of input nodes, ({self.L}).")
+
+        return targets * self.teacher_scaling[:, None]
