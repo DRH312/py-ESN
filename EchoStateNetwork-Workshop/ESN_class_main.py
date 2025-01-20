@@ -314,6 +314,11 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
+        if input_pattern.ndim == 1:
+            input_pattern = input_pattern.reshape(-1, 1)
+        if prev_state.ndim == 1:
+            prev_state = prev_state.reshape(-1, 1)
+
         # The matrix products for the inputs and previous reservoir sates.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state
         nonlinear_contribution = nonlinear_contribution.reshape(-1, 1)
@@ -340,6 +345,13 @@ class EchoStateNetwork:
         :return: The current reservoir state, with shape (N, 1) as well.
         """
 
+        if input_pattern.ndim == 1:
+            input_pattern = input_pattern.reshape(-1, 1)
+        if prev_state.ndim == 1:
+            prev_state = prev_state.reshape(-1, 1)
+        if target.ndim == 1:
+            target = target.reshape(-1, 1)
+
         # The matrix products for the inputs, previous reservoir states and feedback.
         nonlinear_contribution = self.W_in @ input_pattern + self.W_res @ prev_state + self.W_fb @ target
         nonlinear_contribution = nonlinear_contribution.reshape(-1, 1)
@@ -352,12 +364,18 @@ class EchoStateNetwork:
 
         return (1 - self.leak) * prev_state + preactivation
 
-    def acquire_reservoir_states(self, inputs: np.ndarray, teachers: np.ndarray, visualized_neurons: int):
+
+    def acquire_reservoir_states(self,
+                                 inputs: np.ndarray,
+                                 teachers: np.ndarray,
+                                 visualized_neurons: int,
+                                 burn_in: int) -> np.ndarray:
 
         """
         Perform dimensionality expansion on the data used to train the network. Conventionally, this will usually be
         the past of a signal, for which forecasting is used to predict the signal's evolution. #
 
+        :param burn_in: The number of initial reservoir states to discard as they misrepresent the data.
         :param inputs: Input sequence with shape (K, timesteps).
         :param teachers: Target sequence with shape (L, timesteps). Not optional. Required for regression.
         :param visualized_neurons: The number of neurons to be plotted. This parameter is only necessary if verbosity is
@@ -405,8 +423,9 @@ class EchoStateNetwork:
                 augmented_state = np.vstack(tup=[inputs[:, t:t+1], states[:, t:t+1]])
 
                 # Update XX^T and YX^T matrices incrementally.
-                self.XX_T += augmented_state @ augmented_state.T
-                self.YX_T += teachers[:, t:t+1] @ augmented_state.T
+                if t >= burn_in:
+                    self.XX_T += augmented_state @ augmented_state.T
+                    self.YX_T += teachers[:, t:t+1] @ augmented_state.T
 
         # Without feedback:
         else:
@@ -418,8 +437,9 @@ class EchoStateNetwork:
                 augmented_state = np.vstack(tup=[inputs[:, t:t+1], states[:, t:t+1]])
 
                 # Update XX^T and YX^T matrices incrementally.
-                self.XX_T += augmented_state @ augmented_state.T
-                self.YX_T += teachers[:, t:t+1] @ augmented_state.T
+                if t >= burn_in:
+                    self.XX_T += augmented_state @ augmented_state.T
+                    self.YX_T += teachers[:, t:t+1] @ augmented_state.T
 
 
         # Final step, retain the final states for continuation or forecasting later.
@@ -435,7 +455,7 @@ class EchoStateNetwork:
             plt.ylabel("Node Activation", fontsize=10)
             plt.xlabel("Time Steps", fontsize=10)
             for i in range(visualized_neurons):
-                plt.plot(range(timesteps), states[i, :], lw=0.5, label=f"Neuron {i + 1}")
+                plt.plot(range(timesteps - burn_in), states[i, burn_in:], lw=0.5, label=f"Neuron {i + 1}")
             plt.legend(fontsize=8, loc="upper right", ncol=2, frameon=False)
             plt.tight_layout()
             plt.show()
@@ -447,31 +467,22 @@ class EchoStateNetwork:
         return states.astype(self.dtype)
 
 
-    def tikhonov_regression(self, burn_in: int, ridge: float) -> np.ndarray:
+    def tikhonov_regression(self, ridge: float) -> np.ndarray:
 
         """
-        Performs Tikhonov (ridge) regression using the reservoir states in a one-step optimisation approach. The
-        user should experiment with different values of burn_in and ridge to find what best suits their data.
-        You should be avoiding large elements in the readout matrix, which the ridge parameter helps in mitigating.
+        Performs Tikhonov (ridge) regression using the reservoir states in a one-step optimisation approach.
 
-        :param burn_in: The number of initial reservoir states to discard, you only need to remove those that
-        mis-represent your data.
         :param ridge: The penalty applied to readout weight matrix to prevent any elements from dominating.
 
         :return: A readout weight matrix used for further predictions or system-evolution forecasting.
         """
 
-        # Eliminate the transient states created by the reservoir. Plotting the reservoir states should provide a
-        # visual indicator of how long the transient period lasts.
-        truncated_XX_T = self.XX_T[:, burn_in:]
-        truncated_YX_T = self.YX_T[:, burn_in:]
-
         # Apply a penalty to the diagonal elements of XX^T.
-        regularized_XX_T = truncated_XX_T + (ridge * np.eye(truncated_XX_T.shape[0], dtype=self.dtype))
+        regularized_XX_T = self.XX_T + (ridge * np.eye(self.XX_T.shape[0], dtype=self.dtype))
 
         # Using a linear solver that will no doubt be better than anything I can make.
         # We want to ensure that XX^T is symmetric for the following to work.
-        self.W_out = linalg.solve(regularized_XX_T, truncated_YX_T.T, assume_a='sym').T
+        self.W_out = linalg.solve(regularized_XX_T, self.YX_T.T, assume_a='sym').T
 
         if self.verbose > 0:
             print(f"Readout weight matrix shape: {self.W_out.shape}")
@@ -586,7 +597,7 @@ class EchoStateNetwork:
             input_signal = np.hstack([np.zeros((self.K + self.bias, 1)), input_signal])
 
             # Loop for feedback-enabled predictions.
-            for t in range(1, timesteps + 2):
+            for t in range(1, timesteps + 1):
                 # Variables needed for computation.
                 input_pattern = input_signal[:, t:t+1]  # Current timestep.
                 output_feedback = Y_out[:, t-1:t]  # Previous timestep.
@@ -604,7 +615,7 @@ class EchoStateNetwork:
             return Y_out[:, 0:], last_state
 
         else:  # No feedback.
-            for t in range(0, timesteps + 1):
+            for t in range(0, timesteps):
                 input_pattern = input_signal[:, t:t + 1]
                 current_state = self._update_no_feedback(prev_state=last_state,
                                                          input_pattern=input_pattern)
@@ -618,119 +629,16 @@ class EchoStateNetwork:
             return Y_out[:, :], last_state
 
 
-    def generative_forecasting(self,
-                               forecasting_horizon: int,
-                               starting_point: np.ndarray = None,
-                               initial_state: np.ndarray = None,
-                               continuation=True) -> tuple:
+    def generative_forecast(self,
+                            T1: int,
+                            u1: np.ndarray = None,
+                            x0: np.ndarray = None,
+                            continuation=True) -> tuple:
 
         """
-        Performs generative forecasting, where the predicted output is used as the subsequent input. Because of this,
-        feedback is disabled here. Do not apply a bias to the input even if bias is enabled for the network. The method
-        will pick up on this automatically and apply it if needed.
-
-        Warming up the network with 'acquire_reservoir_states' is generally a good approach if you have a subset of the
-        data; those states can then be used in this forecasting algorithm and will be a better representation of the
-        data to come than potentially the training data and definitely an array of zeros.
-
-        :param forecasting_horizon: The number of timesteps the network will attempt to forecast into the future.
-        :param starting_point: The initial input into the network. This should have shape (K, 1).
-        :param initial_state: The reservoir state preceding the initial input.
-        :param continuation: Whether to use the last states from the training data as precursors for this task.
-
-        :return: The matrix of outputs (K, forecasting_horizon), and the last reservoir state.
-        """
-
-        # ----- VALIDATION -----
-        if self.W_out is None:
-            raise ValueError("Readout weights are undefined. Train the network before attempting a forecast.")
-        if forecasting_horizon <= 0 or not isinstance(forecasting_horizon, int):
-            raise ValueError("The forecasting horizon must be a positive integer.")
-        if self.L != self.K:
-            raise ValueError(f"For generative forecasting tasks, the network must have the same input and output dim.")
-
-        # If initial inputs and states were supplied, they need to have their shapes validated.
-        # Starting input vector.
-        if starting_point is not None:
-            if starting_point.shape != (self.K, 1):
-                raise ValueError(f"Initial input must have shape ({self.K}, 1). Has shape: {starting_point.shape}.")
-        # Starting reservoir state.
-        if initial_state is not None:
-            if initial_state.shape != (self.N, 1):
-                raise ValueError(f"Initial state must have shape ({self.N}, 1). Has shape: {initial_state.shape}.")
-
-
-        # ----- INITIALIZATION -----
-        # Allocate memory for the forecasted outputs.
-        Y_out = np.zeros(shape=(self.L, forecasting_horizon), dtype=self.dtype)
-
-        # Set the initial input and state.
-        if continuation:
-            if self.last_state is None or self.last_output is None:
-                raise ValueError("Continuation is enabled, but either the last state or output is missing. Or both...")
-            last_state = self.last_state
-            input_signal = self.last_output
-        else:
-            # If continuation is False, there MUST be a starting input point.
-            if starting_point is None:
-                raise ValueError("Method set not to continue from training data, but no starting point was provided.")
-            input_signal = starting_point
-
-            # If continuation is false, it is better to supply an initial_state, but not necessary.
-            if initial_state is None:
-                last_state = np.zeros(shape=(self.N, 1), dtype=self.dtype)
-                print("Initial state initialised as a vector of zeros.")
-            else:
-                last_state = initial_state
-
-
-        # ----- FORECASTING -----
-        # We divide along biases here since we are constantly getting new inputs.
-        if self.bias:
-            for t in range(forecasting_horizon):
-                # Prepend a bias onto the input_signal.
-                input_pattern = np.vstack([np.ones((1, 1)), input_signal])
-                # Create new reservoir state.
-                current_state = self._update_no_feedback(prev_state=last_state,
-                                                         input_pattern=input_pattern)
-
-                # Calculate prediction.
-                input_signal = self.W_out @ np.vstack([input_pattern, current_state])
-
-                # Update states:
-                last_state = current_state
-                Y_out[:, t:t+1] = input_signal
-
-            return Y_out, last_state
-
-
-        # No bias included.
-        else:
-            for t in range(forecasting_horizon):
-                # Create new reservoir state.
-                current_state = self._update_no_feedback(prev_state=last_state,
-                                                         input_pattern=input_signal)
-
-                # Calculate prediction.
-                input_signal = self.W_out @ np.vstack([input_signal, current_state])
-
-                # Update states:
-                last_state = current_state
-                Y_out[:, t:t + 1] = input_signal
-
-            return Y_out, last_state
-
-
-    def _generative_forecast(self,
-                             T1: int,
-                             u1: np.ndarray = None,
-                             x0: np.ndarray = None,
-                             u0: np.ndarray = None,
-                             continuation=True) -> tuple:
-
-        """
-        Performs generative forecasting, where the predicted output is used as the subsequent input. Do not apply a bias to the input even if bias is enabled for the network. The method
-        will pick up on this automatically and apply it if needed.
+        Performs generative forecasting, where the predicted output is used as the subsequent input. Do not apply a bias
+        to the input even if bias is enabled for the network. The method will pick up on this automatically and apply
+        it if needed. Feedback functionality is currently unsupported.
 
         Warming up the network with 'acquire_reservoir_states' is generally a good approach if you have a subset of the
         data; those states can then be used in this forecasting algorithm and will be a better representation of the
@@ -739,7 +647,6 @@ class EchoStateNetwork:
         :param T1: The # of timesteps into the future that the model will try to forecast.
         :param u1: The initial input vector.
         :param x0: The reservoir state at the timestep preceding u1.
-        :param u0: The input vector at the timestep directly before u1.
         :param continuation: Whether to use the end states from reservoir state acquisition for forecasting.
 
         :return: The matrix of predictions Y_out w/ shape (K=L, T1); and the final reservoir state X.
@@ -758,5 +665,65 @@ class EchoStateNetwork:
             raise ValueError(f"u1 must have shape ({self.K}, 1). Provided shape: {u1.shape}.")
         if x0 is not None and x0.shape != (self.N, 1):
             raise ValueError(f"x0 must have shape ({self.N}, 1). Provided shape: {x0.shape}.")
-        if u0 is not None and u0.shape != (self.K, 1):
-            raise ValueError(f"u0 must have shape ({self.K}, 1). Provided shape: {u0.shape}.")
+
+
+        # ----- INITIALIZATION -----
+        # Allocate memory for the forecasted outputs.
+        Y_out = np.zeros(shape=(self.L, T1), dtype=self.dtype)
+
+        # Set the initial input and state.
+        if continuation:
+            if self.last_state is None or self.last_output is None:
+                raise ValueError(
+                    "Continuation is enabled, but either the last state or output is missing. Or both...")
+            last_state = self.last_state
+            input_signal = self.last_output
+        else:
+            # If continuation is False, there MUST be a starting input point.
+            if u1 is None:
+                raise ValueError("Method set not to continue from training data, but no starting point was provided.")
+            input_signal = u1
+
+            # If continuation is false, it is better to supply an initial_state, but not necessary.
+            if x0 is None:
+                last_state = np.zeros(shape=(self.N, 1), dtype=self.dtype)
+                print("Initial state initialised as a vector of zeros.")
+            else:
+                last_state = x0
+
+
+        # ----- FORECASTING -----
+        # We divide along biases here since we are constantly getting new inputs.
+        if self.bias:
+            for t in range(T1):
+                # Prepend a bias onto the input_signal.
+                input_pattern = np.vstack([np.ones((1, 1)), input_signal])
+                # Create new reservoir state.
+                current_state = self._update_no_feedback(prev_state=last_state,
+                                                         input_pattern=input_pattern)
+
+                # Calculate prediction.
+                input_signal = self.W_out @ np.vstack([input_pattern, current_state])
+
+                # Update states:
+                last_state = current_state
+                Y_out[:, t:t + 1] = input_signal
+
+            return Y_out, last_state
+
+
+        # No bias included.
+        else:
+            for t in range(T1):
+                # Create new reservoir state.
+                current_state = self._update_no_feedback(prev_state=last_state,
+                                                         input_pattern=input_signal)
+
+                # Calculate prediction.
+                input_signal = self.W_out @ np.vstack([input_signal, current_state])
+
+                # Update states:
+                last_state = current_state
+                Y_out[:, t:t + 1] = input_signal
+
+            return Y_out, last_state
