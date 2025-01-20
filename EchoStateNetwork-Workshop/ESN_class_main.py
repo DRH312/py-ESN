@@ -494,6 +494,7 @@ class EchoStateNetwork:
 
         return self.W_out
 
+
     def _plot_readout_histogram(self) -> None:
         """
         Plots a histogram of the readout weight matrix elements.
@@ -511,15 +512,173 @@ class EchoStateNetwork:
         plt.show()
 
 
-    def _forecast(self, inputs, continuation=True):
+    def cross_series_prediction(self,
+                                input_signal: np.ndarray,
+                                initial_state: np.ndarray = None,
+                                initial_output: np.ndarray = None,
+                                continuation=True) -> tuple:
         """
-        Forecast the evolution of a timeseries using the trained Echo State Network.
+        When supplying an input signal, do so without including a bias atop each datapoint. This method will
+        automatically add it onto the signal if the network utilises it. The input signal should have shape
+        (K, timesteps), for which the columns will be used to determine how many forecasting iterations take place.
 
-        :param inputs:
-        :param continuation: Whether the network is
+
+        :param input_signal: A series of inputs with shape (K, forecast_horizon) used to predict another signal.
+        :param initial_state:  The dimensionality expanded input of the input preceding the input_signal. (N, 1).
+        :param initial_output: The value of the output at the timestep preceding the initial input. (L, 1).
+        :param continuation: Whether to use the last states used during reservoir warmup as part of this exercise.
         :return:
         """
 
+
+        # ----- VALIDATION -----
+        # Perform some checks to ensure everything needed for functionality is present.
         if self.W_out is None:
             raise ValueError("Readout Weights are undefined. The network must be trained before it can forecast.")
+
+        # Input signal dimensions consistent with network, timescale consistent with forecasting horizon.
+        if input_signal.shape[0] != self.K:
+            raise ValueError(f"Shape mismatch with number of rows for input. Input signal should have shape "
+                             f"({self.K + self.bias}, timesteps). Input has shape {input_signal.shape}")
+        timesteps = input_signal.shape[1]
+
+        # If the network uses a bias, the inputs here will need to have one too.
+        if self.bias:
+            input_signal = np.vstack([np.ones((1, timesteps)), input_signal])
+
+        # ----- INITIALIZATION -----
+        if self.enable_feedback:  # We add some flak to the beginning of the matrix to use the initial values.
+            Y_out = np.zeros(shape=(self.L, 1 + timesteps), dtype=self.dtype)
+        else:
+            Y_out = np.zeros(shape=(self.L, timesteps), dtype=self.dtype)
+
+
+        # ----- SETTING UP INITIAL STATES -----
+        if continuation:  # Use the final states generated during reservoir state acquisition.
+            # Acquiring x_0 = x_T:
+            if self.last_state is None:
+                raise ValueError(f"Continuation is set to true, but there are no saved states.")
+            last_state = self.last_state
+
+            # Acquiring y_0 = y_T:
+            if self.enable_feedback:
+                if self.last_output is None:
+                    raise ValueError(f"Continuation and feedback are set to true, but there is no saved last output.")
+                Y_out[:, 0] = self.last_output
+
+        else:
+            # Use the provided initial_state if available, else generate it as a null-vector.
+            if initial_state is not None and initial_state.shape == (self.N, 1):
+                last_state = initial_state
+            else:
+                last_state = np.zeros((self.N, 1), dtype=self.dtype)
+
+            if self.enable_feedback:
+                if initial_output is not None and initial_output.shape == (self.L, 1):
+                    Y_out[:, 0] = initial_output
+                else:
+                    Y_out[:, 0] = np.zeros((self.L, 1), dtype=self.dtype)
+
+
+        # ----- CROSS SERIES PREDICTION -----
+        if self.enable_feedback:
+            # Pad out the first column of the input vector with zeros. Neatens notation going forward.
+            input_signal = np.hstack([np.zeros((self.K + self.bias, 1)), input_signal])
+
+            # Loop for feedback-enabled predictions.
+            for t in range(1, timesteps + 2):
+                # Variables needed for computation.
+                input_pattern = input_signal[:, t:t+1]  # Current timestep.
+                output_feedback = Y_out[:, t-1:t]  # Previous timestep.
+
+                current_state = self._update_with_feedback(prev_state=last_state,
+                                                           input_pattern=input_pattern,
+                                                           target=output_feedback)
+
+                # Predict the state of the other signal at this timestep.
+                Y_out[:, t:t+1] = self.W_out @ np.vstack([input_pattern, current_state])
+
+                # Set this state to be the 'last state' for subsequent use.
+                last_state = current_state
+
+            return Y_out[:, 0:], last_state
+
+        else:  # No feedback.
+            for t in range(0, timesteps + 1):
+                input_pattern = input_signal[:, t:t + 1]
+                current_state = self._update_no_feedback(prev_state=last_state,
+                                                         input_pattern=input_pattern)
+
+                # Predict the state of the other signal at this timestep.
+                Y_out[:, t:t+1] = self.W_out @ np.vstack([input_pattern, current_state])
+
+                # Set this state to be the 'last state' for subsequent use.
+                last_state = current_state
+
+            return Y_out[:, :], last_state
+
+
+    def generative_forecasting(self,
+                               forecasting_horizon: int,
+                               starting_point: np.ndarray = None,
+                               initial_state: np.ndarray = None,
+                               continuation=True) -> tuple:
+
+        """
+        Performs generative forecasting, where the predicted output is used as the subsequent input. Because of this,
+        feedback is disabled here. Do not apply a bias to the input even if bias is enabled for the network. The method
+        will pick up on this automatically and apply it if needed.
+
+        Warming up the network with 'acquire_reservoir_states' is generally a good approach if you have a subset of the
+        data; those states can then be used in this forecasting algorithm and will be a better representation of the
+        data to come than potentially the training data and definitely an array of zeros.
+
+        :param forecasting_horizon: The number of timesteps the network will attempt to forecast into the future.
+        :param starting_point: The initial input into the network. This should have shape (K, 1).
+        :param initial_state: The reservoir state preceding the initial input.
+        :param continuation: Whether to use the last states from the training data as precursors for this task.
+        :return:
+        """
+
+        # ----- VALIDATION -----
+        if self.W_out is None:
+            raise ValueError("Readout weights are undefined. Train the network before attempting a forecast.")
+        if forecasting_horizon <= 0 or forecasting_horizon is not int:
+            raise ValueError("The forecasting horizon must be a positive integer.")
+        if self.L != self.K:
+            raise ValueError(f"For generative forecasting tasks, the network must have the same input and output dim.")
+
+        # If initial inputs and states were supplied, they need to have their shapes validated.
+        # Starting input vector.
+        if starting_point is not None:
+            if starting_point.shape != (self.K, 1):
+                raise ValueError(f"Initial input must have shape ({self.K}, 1). Has shape: {starting_point.shape}.")
+        # Starting reservoir state.
+        if initial_state is not None:
+            if initial_state.shape != (self.N, 1):
+                raise ValueError(f"Initial state must have shape ({self.N}, 1). Has shape: {initial_state.shape}.")
+
+
+
+        # ----- INITIALIZATION -----
+        # Allocate memory for the forecasted outputs.
+        Y_out = np.zeros(shape=(self.L, forecasting_horizon), dtype=self.dtype)
+
+        # Set the initial input and state.
+        if continuation:
+            if self.last_state is None or self.last_output is None:
+                raise ValueError("Continuation is enabled, but either the last state or output is missing. Or both...")
+            last_state = self.last_state
+            input_signal = self.last_output
+        else:
+            # If continuation is False, there MUST be a starting input point.
+            if starting_point is None:
+                raise ValueError("Method set not to continue from training data, but no starting point was provided.")
+            input_signal = starting_point
+
+            # If continuation is false, it is better to supply an initial_state, but not necessary.
+            if initial_state is None:
+                last_state = np.zeros(shape=(self.N, 1), dtype=self.dtype)
+                print("Initial state initialised as a vector of zeros.")
+            last_state = initial_state
 
