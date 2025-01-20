@@ -637,13 +637,14 @@ class EchoStateNetwork:
         :param starting_point: The initial input into the network. This should have shape (K, 1).
         :param initial_state: The reservoir state preceding the initial input.
         :param continuation: Whether to use the last states from the training data as precursors for this task.
-        :return:
+
+        :return: The matrix of outputs (K, forecasting_horizon), and the last reservoir state.
         """
 
         # ----- VALIDATION -----
         if self.W_out is None:
             raise ValueError("Readout weights are undefined. Train the network before attempting a forecast.")
-        if forecasting_horizon <= 0 or forecasting_horizon is not int:
+        if forecasting_horizon <= 0 or not isinstance(forecasting_horizon, int):
             raise ValueError("The forecasting horizon must be a positive integer.")
         if self.L != self.K:
             raise ValueError(f"For generative forecasting tasks, the network must have the same input and output dim.")
@@ -657,7 +658,6 @@ class EchoStateNetwork:
         if initial_state is not None:
             if initial_state.shape != (self.N, 1):
                 raise ValueError(f"Initial state must have shape ({self.N}, 1). Has shape: {initial_state.shape}.")
-
 
 
         # ----- INITIALIZATION -----
@@ -680,5 +680,83 @@ class EchoStateNetwork:
             if initial_state is None:
                 last_state = np.zeros(shape=(self.N, 1), dtype=self.dtype)
                 print("Initial state initialised as a vector of zeros.")
-            last_state = initial_state
+            else:
+                last_state = initial_state
 
+
+        # ----- FORECASTING -----
+        # We divide along biases here since we are constantly getting new inputs.
+        if self.bias:
+            for t in range(forecasting_horizon):
+                # Prepend a bias onto the input_signal.
+                input_pattern = np.vstack([np.ones((1, 1)), input_signal])
+                # Create new reservoir state.
+                current_state = self._update_no_feedback(prev_state=last_state,
+                                                         input_pattern=input_pattern)
+
+                # Calculate prediction.
+                input_signal = self.W_out @ np.vstack([input_pattern, current_state])
+
+                # Update states:
+                last_state = current_state
+                Y_out[:, t:t+1] = input_signal
+
+            return Y_out, last_state
+
+
+        # No bias included.
+        else:
+            for t in range(forecasting_horizon):
+                # Create new reservoir state.
+                current_state = self._update_no_feedback(prev_state=last_state,
+                                                         input_pattern=input_signal)
+
+                # Calculate prediction.
+                input_signal = self.W_out @ np.vstack([input_signal, current_state])
+
+                # Update states:
+                last_state = current_state
+                Y_out[:, t:t + 1] = input_signal
+
+            return Y_out, last_state
+
+
+    def _generative_forecast(self,
+                             T1: int,
+                             u1: np.ndarray = None,
+                             x0: np.ndarray = None,
+                             u0: np.ndarray = None,
+                             continuation=True) -> tuple:
+
+        """
+        Performs generative forecasting, where the predicted output is used as the subsequent input. Do not apply a bias to the input even if bias is enabled for the network. The method
+        will pick up on this automatically and apply it if needed.
+
+        Warming up the network with 'acquire_reservoir_states' is generally a good approach if you have a subset of the
+        data; those states can then be used in this forecasting algorithm and will be a better representation of the
+        data to come than potentially the training data and definitely an array of zeros.
+
+        :param T1: The # of timesteps into the future that the model will try to forecast.
+        :param u1: The initial input vector.
+        :param x0: The reservoir state at the timestep preceding u1.
+        :param u0: The input vector at the timestep directly before u1.
+        :param continuation: Whether to use the end states from reservoir state acquisition for forecasting.
+
+        :return: The matrix of predictions Y_out w/ shape (K=L, T1); and the final reservoir state X.
+        """
+
+        # ----- VALIDATION -----
+        if self.W_out is None:
+            raise ValueError(f"Network is untrained. W_out has type: None.")
+        if self.K != self.L:
+            raise ValueError(f"In generative forecasting, the shape of the output must match the input.")
+        if T1 <= 0 or not isinstance(T1, int):
+            raise ValueError("The forecasting horizon must be a positive integer.")
+
+        # Shape checks if any initial variables were supplied to the method.
+        if u1 is not None and u1.shape != (self.K, 1):
+            raise ValueError(f"u1 must have shape ({self.K}, 1). Provided shape: {u1.shape}.")
+        if x0 is not None and x0.shape != (self.N, 1):
+            raise ValueError(f"x0 must have shape ({self.N}, 1). Provided shape: {x0.shape}.")
+        if u0 is not None and u0.shape != (self.K, 1):
+            raise ValueError(f"u0 must have shape ({self.K}, 1). Provided shape: {u0.shape}.")
