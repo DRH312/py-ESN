@@ -65,8 +65,8 @@ class EchoStateNetwork:
 
         # Cementing the datatype which will be maintained across the whole series of computations.
         self.dtype = dtype
-        if self.dtype not in ["float128", "float64", "float32", "float16"]:
-            raise ValueError(f"Selected datatype must adhere to {['float64', 'float32', 'float16']}")
+        if self.dtype not in ["float64", "float32"]:
+            raise ValueError(f"Selected datatype must adhere to {['float64', 'float32']}")
 
         # Ensuring that the verbosity scale is an integer, and that it falls into the acceptable range.
         self.verbose = int(verbose)
@@ -89,7 +89,7 @@ class EchoStateNetwork:
         self.last_output = None
 
 
-    def initialize_reservoir(self, save_weights=True) -> None:
+    def initialize_reservoir(self, save_weights=False) -> None:
 
         """
         Initializes an N*N sparse adjacency matrix that defines the reservoir of the ESN. The nonzero elements of the
@@ -120,7 +120,6 @@ class EchoStateNetwork:
             # These are sampled from the same distribution as the reservoir, but remain dense.
             self.W_in = self.rng.normal(loc=0, scale=1, size=(self.N, self.K + self.bias)).astype(self.dtype)
             # Setting the range to [-1, +1]
-            self.W_in /= np.abs(self.W_in).max()
 
             if self.bias:
                 self.W_in[:, 0] = 1
@@ -128,7 +127,6 @@ class EchoStateNetwork:
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
                 self.W_fb = self.rng.normal(loc=0, scale=1, size=(self.N, self.L)).astype(self.dtype)
-                self.W_fb /= np.abs(self.W_fb).max()
 
             else:
                 self.W_fb = None
@@ -145,12 +143,10 @@ class EchoStateNetwork:
             # Initializing the input connection weights.
             # These are sampled from the same distribution as the reservoir, but remain dense.
             self.W_in = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.K + self.bias)).astype(self.dtype)
-            self.W_in /= np.abs(self.W_in).max()  # Scale to [-0.5, 0.5]
 
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
                 self.W_fb = self.rng.uniform(low=-0.5, high=0.5, size=(self.N, self.L)).astype(self.dtype)
-                self.W_fb /= np.abs(self.W_fb).max()
 
             else:
                 self.W_fb = None
@@ -202,14 +198,13 @@ class EchoStateNetwork:
 
 
     def _save_weights_locally(self) -> None:
-        print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
+        if self.verbose > 1:
+            print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
 
-        current_dir = os.getcwd()
-        parent_dir = os.path.dirname(current_dir)
-
-        # Define the output directory at the parent level
-        output_dir = os.path.join(parent_dir, "Generated_Weights")
+        # Defining the output directory relative to the package.
+        output_dir = os.path.join(os.getcwd(), "generated_weights")
         os.makedirs(output_dir, exist_ok=True)
+
 
         # Save reservoir weights.
         W_res_dense = self.W_res.toarray()  # Converting to dense for uploading to CSV.
@@ -237,17 +232,10 @@ class EchoStateNetwork:
         largest_eigenvalue = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',
                                                        return_eigenvectors=False,
                                                        tol=1e-10)[0])
-        print(f"The largest eigenvalue of this matrix was: {largest_eigenvalue}")
 
         # Scale the sparse reservoir matrix.
         scale_factor = self.sr / largest_eigenvalue
         self.W_res *= scale_factor
-
-        # Forcefully broadening the output distribution.
-        # Normalize the non-zero values to [-1, +1].
-        # self.W_res.data /= np.abs(self.W_res.data).max()
-        # self.W_res.data *= self.sr
-        # self.W_res.data *= 0.5
 
         if self.verbose > 0:
             new_sr = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',

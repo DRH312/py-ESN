@@ -1,0 +1,95 @@
+This document is pertinent to Learning Objectives: 1.1, 1.4, 4.1
+
+In this document we provide a non-exhaustive list of attributes that can test to validate the correct implementation
+of the Echo State Network (ESN). These attributes are separated into the following sets of requirements:
+
+    - Functional Requirements: The core functionalities of the ESN that must be met to assure correct operation.
+    - Performance Requirements: Metrics quantifying efficiency, speed and scalability.
+    - Security Requirements: Measures that ensure the ESN is resistant to unintended or destructive behaviour.
+    - Robustness Requirements: Quantifying the ESN's ability to handle extreme inputs, edge cases and unexpected behaviour.
+
+Below, each category is broken down into a list of the features we can test for:
+
+1) Functional Requirements:
+    1.1) The distribution of elements in the randomly initialised weights conforms to the distribution that they were sampled from.
+    1.2) The same random seed should produce the same results consistently for the same set of inputs. (Reproducibility)
+    1.3) The reservoir adjacency matrix should have a spectral-radius that matches user specification post-scaling.
+    1.4) The reservoir adjacency matrix should have a sparsity that matches user specification.
+    1.5) The reservoir state update equation is mathematically consistent with the supporting literature.
+    1.6) The shapes of all dot products in the reservoir state update equation are all (N, 1).
+    1.7) Inclusion of a bias produces an input vector of shape (K+1, 1) at each update. And the input weights are adjusted
+         to accommodate for the increase in dimension.
+    1.8) When feedback is enabled, it is seamlessly included in the state update procedure, without shape mismatches.
+    1.9) The inclusion of feedback does not result in immediately divergent behaviour during state acquisition or training.
+    2.0) The model is capable of completing a bench-mark regression task, including generative forecasting and cross-series prediction.
+
+2) Performance Requirements: (This includes some quality attributes the user might expect)
+    2.1) Converting the reservoir adjacency matrix from dense to sparse should speed up computation on a test dataset.
+    2.2) The model should be capable of forecasting a Mackey-Glass timeseries for 3000 timesteps following a training
+         period of 6000 timesteps. With a RMSE below 0.01.
+    2.3) The model should be capable of repeating the above test with a reservoir size of 10,000 nodes in under 30 minutes.
+    2.4) The class should provide varying levels of verbosity to explain its operations to the user at runtime.
+    2.5) The class should be simple for the user to operate, and provide guidance on its operation when implemented.
+
+3) Security Requirements:
+    3.1) The model should alert the user when invalid inputs are provided, and cease further operation.
+    3.2) The shapes of vectors should be continuously asserted to assure correct output dimensions.
+    3.3) Large datasets should not completely occupy available memory at runtime.
+    3.4) The model will stop running if memory limits are exceeded.
+
+4) Robustness Requirements:
+    4.1) The internal states should not diverge when hyperparameters are within reasonable bounds. These bounds are specified
+         in the documentation describing the ESN.
+    4.2) The quality of forecasting should not be significantly diminished by the presence of noise in the testing data.
+    4.3) The model should provide a table of statistically meaningful regression metrics following operation.
+    4.4) The model must be equipped to handle missing values as inputs.
+
+
+Although these requirements help assure correct behavior and implementation, there remains a degree of ambiguity from some of
+the conditions that only suggest 'correct' behaviour. Below we list some of the more obscure requirements, and provide some
+additional clarification:
+
+    1.1) - The initialised weights may be scaled strangely depending on the user's choice of input parameters. Whilst we carry
+           out some tests to check for bizarre behaviour without scaling applied, increasing the verbosity of the network will
+           result in print-outs of the distributions during operation, allowing the user to inspect by eye whether the weights
+           conform to expectations. (Do note that asymmetric input scaling will warp the output distribution, but this is
+           expected behaviour.)
+
+    1.2) - As the programme relies on multiple instances of random initialisation it is challenging to assure consistency
+           for very small numbers, as floating point errors can accumulate. We generally consider tolerances on the order
+           of 0.001 or 0.0001, and use float64 for added stability.
+
+    1.5) - Without pre-computed data for comparison, it is challenging to assure that this operation is carried out correctly,
+           but tests with low-dimensional vectors can be carried out for comparison tests.
+
+    1.9) - The parameter space is too large to guarantee this behaviour. As is the range of possible tasks feedback could be
+           utilised in.
+
+    2.2) - These conditions are met on a local machine, which does provide a baseline for required specs for operation.
+           However, it does not guarantee operation on other devices.
+
+    2.3) - As above, this test only assures that the operation isn't taking egregiously long times to perform but provides
+           very little in terms of benchmarking.
+
+    2.4, 2.5) - The quality of the user experience is not for the developer to decide, but actions can be taken to try to
+                reach these goals.
+
+    3.3) - This condition is again device-dependent.
+
+    4.1) - 'Reasonable bounds' refers to ranges that are commonly utilised in benchmarking tasks, but the hyperparameter space
+           is actually infinitely large and therefore cannot be fully explored.
+
+    4.2) - By this we mean that if the set of validation inputs has additional noise added to it, that it is still capable of
+           correctly forecasting the evolution of the signal for a few hundred timesteps.
+
+
+Taking all of these requirements into account, there are still properties that we would ideally want to explore to assure correct
+behavior, but it is impossible to do so. These include:
+
+    - The readout matrix produced during training is optimised to minimise error between the forecasted signal and validation set.
+      (There is simply no way of knowing its found the minimum without trying every other permutation.)
+
+    - The model is resistant to divergent behavior for all hyperparameter selections.
+      (We cannot explore the entire parameter space.)
+
+    -

@@ -6,3 +6,4 @@ Libraries:
     Pandas - 2.2.3
     SciPY - 1.15.0
     Matplotlib - 3.10.0
+    pytest - 8.3.4
