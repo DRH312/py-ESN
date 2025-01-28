@@ -29,20 +29,18 @@ Below, each category is broken down into a list of the features we can test for:
          period of 6000 timesteps. With a RMSE below 0.01.
     2.3) The model should be capable of repeating the above test with a reservoir size of 10,000 nodes in under 30 minutes.
     2.4) The class should provide varying levels of verbosity to explain its operations to the user at runtime.
-    2.5) The class should be simple for the user to operate, and provide guidance on its operation when implemented.
 
 3) Security Requirements:
     3.1) The model should alert the user when invalid inputs are provided, and cease further operation.
     3.2) The shapes of vectors should be continuously asserted to assure correct output dimensions.
     3.3) Large datasets should not completely occupy available memory at runtime.
-    3.4) The model will stop running if memory limits are exceeded.
+    3.4) The model will stop running if the input dimension or length are too large.
 
 4) Robustness Requirements:
     4.1) The internal states should not diverge when hyperparameters are within reasonable bounds. These bounds are specified
          in the documentation describing the ESN.
     4.2) The quality of forecasting should not be significantly diminished by the presence of noise in the testing data.
-    4.3) The model should provide a table of statistically meaningful regression metrics following operation.
-    4.4) The model must be equipped to handle missing values as inputs.
+    4.3) The model must be equipped to handle missing values as inputs.
 
 
 Although these requirements help assure correct behavior and implementation, there remains a degree of ambiguity from some of

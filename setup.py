@@ -12,6 +12,7 @@ setup(
         "scipy >= 1.15.0",
         "matplotlib >= 3.10.0",
         "pytest >= 8.3.4",
+        "scikit-learn >= 1.6.1"
     ],
     python_requires=">=3.10"
 )

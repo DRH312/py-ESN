@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 
 # Brevity
 from datetime import datetime
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M")
 
 
@@ -23,17 +24,41 @@ use-cases.
 """
 
 
+def esn_params_guide():
+    """
+    Prints the required parameters for initializing an Echo State Network.
+    """
+    params = {
+        "input_dim": "Number of input features (K).",
+        "nodes": "Number of reservoir neurons (N).",
+        "output_dim": "Number of output features (L).",
+        "distribution": "Weight initialization distribution ('uniform' or 'normal').",
+        "leak": "Leak rate controlling state update speed.",
+        "connectivity": "Fraction of nonzero weights in the reservoir.",
+        "input_scaling": "Scaling factor applied to input weights.",
+        "spectral_radius": "Spectral radius of the reservoir matrix.",
+        "noise": "Amount of noise added to the reservoir state.",
+        "enable_feedback": "Boolean flag to enable output-to-reservoir feedback.",
+        "seed": "Random seed for reproducibility.",
+        "bias": "Boolean flag to include a bias term."
+    }
+
+    print("\n **Required Parameters for ESN:**")
+    for key, desc in params.items():
+        print(f" - **{key}**: {desc}")
+
+
 class EchoStateNetwork:
 
-    def __init__(self, ESN_params: dict, dtype: str = "float64", verbose=0):
+    def __init__(self, ESN_params: dict, dtype: str = "float64", verbosity=0):
 
         """
         Declaring this class fully initializes an Echo State Network provided that a correct dictionary of inputs is
         supplied to the class.
 
-        :param ESN_params:
-        :param dtype:
-        :param verbose:
+        :param ESN_params: A dictionary of model parameters. Call param_guide function for more information.
+        :param dtype: Currently acceptable datapoints are float32 and float64.
+        :param verbosity: An integer ranging from 0 to 3. Increasingly provides system information at runtime.
         """
 
         # Model structure:
@@ -69,9 +94,9 @@ class EchoStateNetwork:
             raise ValueError(f"Selected datatype must adhere to {['float64', 'float32']}")
 
         # Ensuring that the verbosity scale is an integer, and that it falls into the acceptable range.
-        self.verbose = int(verbose)
-        if self.verbose > 3:
-            self.verbose = 3
+        self.verbosity = int(verbosity)
+        if self.verbosity > 3:
+            self.verbosity = 3
 
         # Model weights:
         self.W_in = None
@@ -87,6 +112,48 @@ class EchoStateNetwork:
         self.last_state = None
         self.last_input = None
         self.last_output = None
+
+
+
+    def load_network(self, Win: np.ndarray, Wres: np.ndarray, Wfb: np.ndarray = None):
+        """
+        Allows you to upload a pre-existing model so long as the dimensions of the inputted matrices match the ESN
+        parameter dictionary.
+
+        :param Win: Must have shape (N, K + bias).
+        :param Wres: Must have shape (N, N).
+        :param Wfb: Optional.Must have shape (N, L). Only necessary if feedback is enabled.
+
+        :return: None.
+        """
+
+        # Check Win shape.
+        expected_Win_shape = (self.N, self.K + self.bias)
+        if Win.shape != expected_Win_shape:
+            raise ValueError(f"Win shape mismatch. Expected {expected_Win_shape}, but received {Win.shape}.")
+
+        # Check Wres shape.
+        expected_Wres_shape = (self.N, self.N)
+        if Wres.shape != expected_Wres_shape:
+            raise ValueError(f"Wres shape mismatch. Expected {expected_Wres_shape}, but received {Wres.shape}.")
+
+        # Check Wfb shape (if feedback is enabled).
+        if self.enable_feedback:
+            expected_Wfb_shape = (self.N, self.L)
+            if Wfb is None:
+                raise ValueError(
+                    f"Feedback is enabled, but no Wfb matrix was provided! Expected shape: {expected_Wfb_shape}.")
+            if Wfb.shape != expected_Wfb_shape:
+                raise ValueError(f"Wfb shape mismatch. Expected {expected_Wfb_shape}, but received {Wfb.shape}.")
+        else:
+            Wfb = None  # Explicitly set to None if feedback is disabled.
+
+        # Assign new weights, asserting the correct datatype.
+        self.W_in = Win.astype(self.dtype)
+        self.W_res = sparse.csr_matrix(Wres.astype(self.dtype))  # Convert to sparse matrix.
+        self.W_fb = Wfb.astype(self.dtype) if Wfb is not None else None
+
+        print("Network weights uploaded.")
 
 
     def initialize_reservoir(self, save_weights=False) -> None:
@@ -120,9 +187,6 @@ class EchoStateNetwork:
             # These are sampled from the same distribution as the reservoir, but remain dense.
             self.W_in = self.rng.normal(loc=0, scale=1, size=(self.N, self.K + self.bias)).astype(self.dtype)
             # Setting the range to [-1, +1]
-
-            if self.bias:
-                self.W_in[:, 0] = 1
 
             # If feedback is enabled, generated a feedback matrix.
             if self.enable_feedback:
@@ -163,6 +227,9 @@ class EchoStateNetwork:
                 raise ValueError(f"The scaling vector should have shape ({self.L}, 1).")
             self.W_fb = self.W_fb * self.teacher_scaling.T
 
+        # Post scaling, we assert that the first column of W_in consists of all 1s.
+        if self.bias:
+            self.W_in[:, 0] = 1
 
         # Convert W_res into a sparse matrix to speed up state acquisition later.
         row_indices, col_indices = np.where(mask)
@@ -170,16 +237,16 @@ class EchoStateNetwork:
                                        shape=(self.N, self.N), dtype=self.dtype)
 
 
-        if self.verbose > 0:
+        if self.verbosity > 0:
             print("Reservoir adjacency matrix initialized. Beginning spectral radius scaling.")
 
         # Now that matrices are generated, scale the spectral radius of the reservoir.
         self._scale_spectral_radius()
 
-        if self.verbose > 0:
+        if self.verbosity > 0:
             print("Reservoir weights spectral radius scaling completed.")
 
-        if self.verbose > 1:
+        if self.verbosity > 1:
             self._plot_reservoir_histogram()
 
             # Print a table of matrix shapes
@@ -198,7 +265,7 @@ class EchoStateNetwork:
 
 
     def _save_weights_locally(self) -> None:
-        if self.verbose > 1:
+        if self.verbosity > 1:
             print(f"Reservoir Adjacency Matrix is of type {type(self.W_res)} with shape {self.W_res.shape}")
 
         # Defining the output directory relative to the package.
@@ -237,7 +304,7 @@ class EchoStateNetwork:
         scale_factor = self.sr / largest_eigenvalue
         self.W_res *= scale_factor
 
-        if self.verbose > 0:
+        if self.verbosity > 0:
             new_sr = np.abs(sparse.linalg.eigs(self.W_res, k=1, which='LM',
                                                return_eigenvectors=False,
                                                tol=1e-10)[0])
@@ -357,7 +424,8 @@ class EchoStateNetwork:
                                  inputs: np.ndarray,
                                  teachers: np.ndarray,
                                  visualized_neurons: int,
-                                 burn_in: int) -> np.ndarray:
+                                 burn_in: int,
+                                 NaNdling: int = 0) -> np.ndarray:
 
         """
         Perform dimensionality expansion on the data used to train the network. Conventionally, this will usually be
@@ -368,9 +436,16 @@ class EchoStateNetwork:
         :param teachers: Target sequence with shape (L, timesteps). Not optional. Required for regression.
         :param visualized_neurons: The number of neurons to be plotted. This parameter is only necessary if verbosity is
         greater than 1.
+        :param NaNdling: 0 -> replace w/ zeros. 1 -> interpolate.
 
         :return: Reservoir states with shape (N, timesteps).
         """
+
+        if inputs.shape[0] != self.K or inputs.ndim != 2:
+            raise ValueError(f"Input signal should have shape ({self.K}, timesteps). Has shape: {inputs.shape}")
+
+        if inputs.shape[1] > 1e6:
+            raise MemoryError(f"I admire your optimism, but this is far too many timesteps. <1 million please.")
 
         if teachers is None:
             raise ValueError("Training targets (teachers) must be provided regardless of whether feedback is enabled.")
@@ -381,6 +456,26 @@ class EchoStateNetwork:
                 f"Mismatch in timesteps: Inputs have {inputs.shape[1]} timesteps, "
                 f"while teachers have {teachers.shape[1]} timesteps."
             )
+
+        if np.isnan(inputs).any():
+
+            # Set NaNs to 0.
+            if NaNdling == 0:
+                print("Warning: NaN values detected in inputs. Setting missing values to zero.")
+                inputs = np.nan_to_num(inputs, nan=0.0)
+
+            # Interpolate
+            if NaNdling == 1:
+                print("Warning: NaN values detected in inputs. Applying interpolation to handle missing data.")
+                for i in range(inputs.shape[0]):  # Iterate over input dimensions (each feature separately)
+                    nan_mask = np.isnan(inputs[i, :])  # Identify where NaNs occur along this row.
+                    if np.any(nan_mask):
+                        valid_timesteps = np.where(~nan_mask)[0]  # Locating timesteps without NaNs.
+                        inputs[i, nan_mask] = np.interp(x=np.where(nan_mask)[0],
+                                                        xp=valid_timesteps,
+                                                        fp=inputs[i, valid_timesteps])
+
+        inputs = inputs.astype(self.dtype)
 
         if self.bias:
             inputs = np.vstack([np.ones((1, inputs.shape[1]), dtype=self.dtype), inputs])
@@ -437,7 +532,7 @@ class EchoStateNetwork:
 
 
         # Printing a subset of the reservoir activations over time.
-        if self.verbose > 1:
+        if self.verbosity > 1:
             plt.figure(figsize=(10, 6))
             plt.title(f"Activation of {int(visualized_neurons)} Reservoir Neurons Over Time", fontsize=12)
             plt.ylabel("Node Activation", fontsize=10)
@@ -448,7 +543,7 @@ class EchoStateNetwork:
             plt.tight_layout()
             plt.show()
 
-        if self.verbose > 1:
+        if self.verbosity > 1:
             print(f"XX^T has shape: {self.XX_T.shape}")
             print(f"YX^T has shape: {self.YX_T.shape}")
 
@@ -472,15 +567,15 @@ class EchoStateNetwork:
         # We want to ensure that XX^T is symmetric for the following to work.
         self.W_out = linalg.solve(regularized_XX_T, self.YX_T.T, assume_a='sym').T
 
-        if self.verbose > 0:
+        if self.verbosity > 0:
             print(f"Readout weight matrix shape: {self.W_out.shape}")
 
             # If verbosity is high, plot the histogram of the readout weights
-        if self.verbose > 1:
+        if self.verbosity > 1:
             self._plot_readout_histogram()
 
             # If verbosity is even higher, save the weights to a file
-        if self.verbose > 2:
+        if self.verbosity > 2:
             current_dir = os.getcwd()
             parent_dir = os.path.dirname(current_dir)
             output_dir = os.path.join(parent_dir, "Generated_Weights")
@@ -617,6 +712,8 @@ class EchoStateNetwork:
             return Y_out[:, :], last_state
 
 
+
+
     def generative_forecast(self,
                             T1: int,
                             u1: np.ndarray = None,
@@ -715,3 +812,29 @@ class EchoStateNetwork:
                 Y_out[:, t:t + 1] = input_signal
 
             return Y_out, last_state
+
+    @staticmethod
+    def print_forecast_metrics(predictions: np.ndarray, targets: np.ndarray):
+        """
+        Computes and prints forecasting performance metrics if verbosity is enabled.
+
+        :param predictions: Forecasted output with shape (L, T).
+        :param targets: Ground truth targets with shape (L, T).
+
+        :return: Pandas DataFrame containing the forecasting metrics.
+        """
+
+        rmse = np.sqrt(mean_squared_error(targets, predictions))  # Overall error.
+        mae = mean_absolute_error(targets, predictions)  # Depicts absolute deviation
+        r2 = r2_score(targets, predictions)  # Goodness of fit.
+        max_error = np.max(np.abs(targets - predictions))  # Worst case scenario.
+        forecast_bias = np.mean(targets - predictions)  # General over/underestimation.
+
+        # Create DataFrame
+        metrics = pd.DataFrame({
+            "Metric": ["RMSE", "MAE", "R² Score", "Max Absolute Error", "Forecast Bias"],
+            "Value": [rmse, mae, r2, max_error, forecast_bias]
+        })
+
+
+        return metrics

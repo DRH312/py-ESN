@@ -43,7 +43,7 @@ def test_input_weights_distribution(distribution: str):
     params["enable_feedback"] = True
 
     # Initialize the network - Generate
-    esn = EchoStateNetwork(params, dtype='float32', verbose=0)
+    esn = EchoStateNetwork(params, dtype='float32', verbosity=0)
     esn.initialize_reservoir()
 
     # Extract input weights
@@ -212,65 +212,64 @@ def test_reservoir_sparsity():
     print("Reservoir sparsity test passed!")
 
 
-# TODO - Fix this test.
 # Attempting to test that the reservoir state update equation is consistent with the literature.
-# def test_state_update_consistency():
-#     """
-#     Proving that the algorithm exactly matches specifications in the literature is practically impossible, since we
-#     cannot check every possible outcome for all possible states. But, by manually computing a process of reservoir
-#     states, they can be compared to the class method for developing them to check that they are still consistent after
-#     any updates are made to the method.
-#
-#     :return: None
-#     """
-#
-#     # Parameter adjustment.
-#     params = default_params.copy()
-#     params["enable_feedback"] = True
-#     params["nodes"] = 100
-#     params["input_dim"] = 1
-#     params["output_dim"] = 1
-#
-#     # Initialise the ESN.
-#     esn = EchoStateNetwork(params, dtype="float64", verbose=0)
-#     esn.initialize_reservoir()
-#
-#     # We generate a random series
-#     timesteps = 10
-#     input_signal = esn.rng.random((params["input_dim"], timesteps), dtype=esn.dtype)
-#     feedback_signal = esn.rng.random((params["output_dim"], timesteps), dtype=esn.dtype)
-#
-#     # Initialize reservoir state
-#     manual_states = np.zeros(shape=(params['nodes'], timesteps), dtype=esn.dtype)
-#
-#     # Manually compute the next reservoir states.
-#     for t in range(1, timesteps):
-#         # Compute reservoir input contributions
-#         u_t = input_signal[:, t:t+1]
-#         y_t = feedback_signal[:, t-1:t]
-#         x_t = manual_states[:, t-1:t]
-#         nonlinear_contribution = (esn.W_res @ x_t + esn.W_in @ u_t + esn.W_fb @ y_t)
-#
-#         # Update reservoir state
-#         manual_states[:, t:t+1] = (1 - params["leak"]) * x_t + params["leak"] * np.tanh(nonlinear_contribution)
-#
-#     print(manual_states.shape)
-#
-#     # Use the ESN to compute reservoir states
-#     esn_computed_states = esn.acquire_reservoir_states(inputs=input_signal,
-#                                                        teachers=feedback_signal,
-#                                                        burn_in=0,
-#                                                        visualized_neurons=0)
-#     print(esn_computed_states.shape)
-#
-#     print(manual_states[:10, 1])
-#     print(esn_computed_states[:10, 1])
-#
-#     # Assert that states match within tolerance
-#     assert np.allclose(manual_states, esn_computed_states, atol=1e-3, rtol=1e-3), \
-#         "Reservoir states do not match between manual computation and the ESN's class method."
-#
-#     print("State update consistency test passed!")
+def test_state_update_consistency():
+    """
+    Proving that the algorithm exactly matches specifications in the literature is practically impossible, since we
+    cannot check every possible outcome for all possible states. But, by manually computing a process of reservoir
+    states, they can be compared to the class method for developing them to check that they are still consistent after
+    any updates are made to the method.
+
+    :return: None
+    """
+
+    # Parameter adjustment.
+    params = default_params.copy()
+    params["enable_feedback"] = True
+    params["nodes"] = 100
+    params["input_dim"] = 1
+    params["output_dim"] = 1
+
+    # Initialise the ESN.
+    esn = EchoStateNetwork(params, dtype="float64", verbosity=0)
+    esn.initialize_reservoir()
+
+    # We generate a random series
+    timesteps = 10
+    input_signal = esn.rng.random((params["input_dim"], timesteps), dtype=esn.dtype)
+    feedback_signal = esn.rng.random((params["output_dim"], timesteps), dtype=esn.dtype)
+
+    # Initialize reservoir state
+    manual_states = np.zeros(shape=(params['nodes'], timesteps), dtype=esn.dtype)
+
+    # Manually compute the next reservoir states.
+    for t in range(1, timesteps):
+        # Compute reservoir input contributions
+        u_t = input_signal[:, t:t+1]
+        y_t = feedback_signal[:, t-1:t]
+        x_t = manual_states[:, t-1:t]
+        nonlinear_contribution = (esn.W_res @ x_t + esn.W_in @ u_t + esn.W_fb @ y_t)
+
+        # Update reservoir state
+        manual_states[:, t:t+1] = (1 - params["leak"]) * x_t + params["leak"] * np.tanh(nonlinear_contribution)
+
+    print(manual_states.shape)
+
+    # Use the ESN to compute reservoir states
+    esn_computed_states = esn.acquire_reservoir_states(inputs=input_signal,
+                                                       teachers=feedback_signal,
+                                                       burn_in=0,
+                                                       visualized_neurons=0)
+    print(esn_computed_states.shape)
+
+    print(manual_states[:10, 1])
+    print(esn_computed_states[:10, 1])
+
+    # Assert that states match within tolerance
+    assert np.allclose(manual_states, esn_computed_states, atol=1e-3, rtol=1e-3), \
+        "Reservoir states do not match between manual computation and the ESN's class method."
+
+    print("State update consistency test passed!")
 
 
 # 1.6 - The shapes of all dot products present in the state-updating equation are all (N, 1).
@@ -281,7 +280,7 @@ def test_dot_product_shapes():
     params["enable_feedback"] = True
 
     # We only need to generate the weights and create some arbitrary vectors that match the network dimensions.
-    esn = EchoStateNetwork(params, verbose=0, dtype="float64")
+    esn = EchoStateNetwork(params, verbosity=0, dtype="float64")
     esn.initialize_reservoir()
 
     # Generate some dummy data, it doesn't matter what their actual values are.
@@ -314,3 +313,123 @@ def test_dot_product_shapes():
         f"Reservoir update produces incorrect shape: {updated_state2.shape}. Should be ({params['nodes']}, 1)."
 
     print("All dot product shapes are correct!")
+
+
+# 1.7 - Bias is seamlessly integrated into the network, and produces the correct shape adjustments.
+def test_bias_inclusion():
+    params = default_params.copy()
+    params["input_dim"] = 5  # Input size
+    params["nodes"] = 50  # Reservoir size
+    params["bias"] = True  # Enable bias
+
+    # Initialise ESN.
+    esn = EchoStateNetwork(params, verbosity=0, dtype="float64")
+    esn.initialize_reservoir()
+
+    # Validate that bias has increased column-count by 1.
+    assert esn.W_in.shape == (params["nodes"], params["input_dim"] + 1), \
+        f"Input weight matrix shape mismatch. Expected {(params['nodes'], params['input_dim'] + 1)}, got {esn.W_in.shape}"
+
+    # Validate the first column of W_in is all ones (for bias).
+    assert np.all(esn.W_in[:, 0] == 1), "Bias column in W_in is not correctly initialised to 1."
+
+    # Generate dummy training data.
+    timesteps = 10
+    input_signal = esn.rng.random((params["input_dim"], timesteps))
+    target_signal = esn.rng.random((params["output_dim"], timesteps))
+
+    # Acquire reservoir states to populate XX^T.
+    esn.acquire_reservoir_states(input_signal, target_signal, visualized_neurons=5, burn_in=2)
+
+    # Validate XX^T shape (1+K+N, 1+K+N)
+    expected_shape = (1 + params["input_dim"] + params["nodes"], 1 + params["input_dim"] + params["nodes"])
+    assert esn.XX_T.shape == expected_shape, \
+        f"XX^T shape mismatch. Expected {expected_shape}, got {esn.XX_T.shape}"
+
+    print("Bias inclusion test passed successfully.")
+
+
+# 1.8 - Feedback is correctly utilised by the model. Shapes of weights and products match expectations.
+def test_feedback_integration():
+    params = default_params.copy()
+    params["input_dim"] = 5  # Input size
+    params["output_dim"] = 3  # Feedback size
+    params["nodes"] = 50  # Reservoir size
+    params["enable_feedback"] = True  # Enable feedback
+
+    # Initialise ESN with feedback
+    esn = EchoStateNetwork(params, verbosity=0, dtype="float64")
+    esn.initialize_reservoir()
+
+    # Validate feedback weight matrix shape
+    assert esn.W_fb is not None, "Feedback weight matrix W_fb should not be None when feedback is enabled."
+    assert esn.W_fb.shape == (params["nodes"], params["output_dim"]), \
+        f"Feedback weight matrix shape mismatch. Expected {(params['nodes'], params['output_dim'])}, got {esn.W_fb.shape}"
+
+    # Generate dummy data
+    timesteps = 10
+    input_signal = esn.rng.random((params["input_dim"], timesteps))
+    target_signal = esn.rng.random((params["output_dim"], timesteps))
+
+    # Perform a single reservoir state update
+    prev_state = np.zeros((params["nodes"], 1), dtype=esn.dtype)
+    u_t = input_signal[:, 0:1]  # First input
+    y_t = target_signal[:, 0:1]  # First feedback output
+
+    # Compute feedback contribution
+    feedback_contribution = esn.W_fb @ y_t
+
+    # Validate feedback contribution shape
+    assert feedback_contribution.shape == (params["nodes"], 1), \
+        f"Feedback contribution shape mismatch. Expected {(params['nodes'], 1)}, got {feedback_contribution.shape}"
+
+    # Perform a full reservoir update with feedback
+    updated_state = esn._update_with_feedback(prev_state=prev_state, input_pattern=u_t, target=y_t)
+
+    # Validate updated reservoir state shape
+    assert updated_state.shape == (params["nodes"], 1), \
+        f"Updated reservoir state shape mismatch. Expected {(params['nodes'], 1)}, got {updated_state.shape}"
+
+    print("Feedback integration test passed successfully.")
+
+
+# 1.9 - The inclusion of feedback shouldn't cause divergent behaviour during state acquisition on
+# a common benchmark task.
+def test_feedback_stability():
+    params = default_params.copy()
+    params["input_dim"] = 5  # Input size
+    params["output_dim"] = 3  # Feedback size
+    params["nodes"] = 100  # Reservoir size
+    params["enable_feedback"] = True  # Enable feedback
+    params["spectral_radius"] = 1.2  # Moderate spectral radius to avoid instability
+    params["leak"] = 0.3  # Moderate leaking rate
+
+    # Initialise ESN with feedback enabled
+    esn = EchoStateNetwork(params, verbosity=0, dtype="float64")
+    esn.initialize_reservoir()
+
+    # Generate dummy input and feedback signals over multiple timesteps
+    timesteps = 1000  # Long enough to observe stability
+    input_signal = esn.rng.random((params["input_dim"], timesteps))
+    target_signal = esn.rng.random((params["output_dim"], timesteps))
+
+    # Acquire reservoir states (Shape: [N, T])
+    reservoir_states = esn.acquire_reservoir_states(input_signal, target_signal, visualized_neurons=5, burn_in=10)
+
+    # At each timestep, produce the largest absolute state.
+    max_state_per_timestep = np.max(np.abs(reservoir_states), axis=0)  # Shape: [T]
+
+    # Compute the 'gradients' between the largest states at each timestep.
+    state_differences = np.diff(reservoir_states, axis=1)  # Shape: [N, T-1]
+    # Of these, which is the largest?
+    max_state_diff = np.max(np.abs(state_differences))
+
+    # Ensure that none of the reservoir states take on values greater than a threshold value.
+    assert np.all(max_state_per_timestep < 10), \
+        f"Reservoir states diverging! Max state magnitude exceeded 10. Observed: {np.max(max_state_per_timestep)}"
+
+    # Ensure that the gradients between the largest state elements are not too steep.
+    assert max_state_diff < 5, \
+        f"Reservoir states changing too drastically! Max observed change: {max_state_diff}"
+
+    print("Feedback stability test passed successfully.")

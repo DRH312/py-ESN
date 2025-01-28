@@ -1,0 +1,35 @@
+In this document, we simply assign classify the tests for the requirements given in 'validation_requirements.txt' as
+being a unit, integration or system test; Providing a short justification alongside this. It's advised to have both
+windows open simultaneously, so you can easily see what is being referred to.
+
+Functional requirements:
+    1.1 - Unit Test - Tests a single class method responsible for weight initialisation.
+    1.2 - System Test - Assesses consistency of all methods in sequence.
+    1.3 - Unit Test - Assesses the consistency of a single method.
+    1.4 - Unit Test - ^
+    1.5 - Integration Test - Tests multiple components working in sequence to check whether they work correctly in tandem.
+    1.6 - Unit Test - Checks that the matrices have correct shape and orientation.
+    1.7 - Unit Test - All instances of bias are utilised within one class method.
+    1.8 - Integration Test - Assesses how inclusion of feedback affects multiple methods within the class.
+    1.9 - Integration Tet - ^
+    2.0 - System Test - Requires all stages of the class in sequence to meet the criteria.
+
+
+Performance Requirements:
+    2.1 - Unit Test - Checks one feature of one class method.
+    2.2 - System Test - Measures overall behaviour on a real application of the class.
+    2.3 - System Test - Assesses full-scale application on a large task.
+    2.4 - Measurable Quality Attribute - It is integrated into the class itself and its effectiveness is in the eye of the beholder.
+
+
+Security Requirements:
+    3.1 - Unit Test - Ensures specific methods output correct error messages when inputs fail to meet function criteria.
+    3.2 - Unit Test - Assures all outputs have correct shapes. These are checked for within the class itself.
+    3.3 - System Test - Stress tests the whole ESN procedure.
+    3.4 - Unit Test - Checks that if input sizes are over the limit the class will reject operation.
+
+
+Robustness Requirements:
+    4.1 - Integration Test - Assesses stability of multiple class components over various, random configurations.
+    4.2 - System Test - Measures consistency of the network as a whole operating under different conditions.
+    4.3 - Unit Test - There is only one method where inputs are supplied, so we only need to place checks on that function.

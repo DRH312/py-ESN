@@ -39,14 +39,14 @@ def estimate_spectral_radius(self, max_iter=1000, tol=1e-6):
 
         # Check for convergence
         if np.abs(eig - eig_prev) < tol:
-            if self.verbose > 0:
+            if self.verbosity > 0:
                 print(f"Converged to spectral radius: {eig:.6f} in {_ + 1} iterations.")
             return eig
 
         # Store this current eigenvalue for subsequent steps.
         eig_prev = eig
 
-    if self.verbose > 0:
+    if self.verbosity > 0:
         print(f"Power iteration failed to converge within {max_iter} iterations. Returning last estimate {eig:.6f}")
     return eig
 
