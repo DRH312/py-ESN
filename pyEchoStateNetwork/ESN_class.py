@@ -16,7 +16,7 @@ timestamp = datetime.now().strftime("%Y-%m-%d_%H:%M")
 
 
 """
-This Python file contains the primary classes that constitute a portable echo-state network. 
+This Python file contains the primary classes that constitute a portable echo-state network!
 Some functionality is kept in separate files, including loss functions and random-weight 
 generation. The aim is to provide a simple but customisable ESN that can be imported into various
 use-cases. 
